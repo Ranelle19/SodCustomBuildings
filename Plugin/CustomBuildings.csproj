@@ -1,0 +1,48 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net6.0</TargetFramework>
+    <AssemblyName>CustomBuildings</AssemblyName>
+    <!-- Keep in step with Plugin.Version (builds without a version were 1.0.0). The editor compares this to never install an older plugin over a newer one. -->
+    <Version>1.0.0</Version>
+    <RootNamespace>CustomBuildings</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+    <!-- Your game folder. Override with:  dotnet build -p:GameDir="D:\Games\Shadows of Doubt" -->
+    <GameDir Condition="'$(GameDir)' == ''">C:\Program Files (x86)\Steam\steamapps\common\Shadows of Doubt</GameDir>
+    <InteropDir Condition="'$(InteropDir)' == ''">$(GameDir)\BepInEx\interop</InteropDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\Shared\BuildingDef.cs" Link="Shared\BuildingDef.cs" />
+    <Compile Include="..\Shared\Piers.cs" Link="Shared\Piers.cs" />
+    <Compile Include="..\Shared\EdgePieces.cs" Link="Shared\EdgePieces.cs" />
+  </ItemGroup>
+
+  <!-- Everything below comes from your own game install after BepInEx has run once. Nothing is bundled. -->
+  <ItemGroup>
+    <Reference Include="$(GameDir)\BepInEx\core\BepInEx.Core.dll" Private="false" />
+    <Reference Include="$(GameDir)\BepInEx\core\BepInEx.Unity.IL2CPP.dll" Private="false" />
+    <Reference Include="$(GameDir)\BepInEx\core\Il2CppInterop.Runtime.dll" Private="false" />
+    <Reference Include="$(GameDir)\BepInEx\core\0Harmony.dll" Private="false" />
+    <Reference Include="$(InteropDir)\Assembly-CSharp.dll" Private="false" />
+    <Reference Include="$(InteropDir)\Il2Cppmscorlib.dll" Private="false" />
+    <Reference Include="$(InteropDir)\Il2CppSystem.Core.dll" Private="false" />
+    <Reference Include="$(InteropDir)\UnityEngine.dll" Private="false" />
+    <Reference Include="$(InteropDir)\UnityEngine.CoreModule.dll" Private="false" />
+    <Reference Include="$(InteropDir)\UnityEngine.JSONSerializeModule.dll" Private="false" />
+    <Reference Include="$(InteropDir)\UnityEngine.ImageConversionModule.dll" Private="false" />
+    <Reference Include="$(InteropDir)\UnityEngine.PhysicsModule.dll" Private="false" />
+    <Reference Include="$(InteropDir)\UnityEngine.InputLegacyModule.dll" Private="false" />
+  </ItemGroup>
+
+  <!-- Copies the built DLL into BepInEx\plugins\CustomBuildings. Skip with -p:CopyToGame=false -->
+  <Target Name="CopyToPlugins" AfterTargets="Build" Condition="'$(CopyToGame)' != 'false'">
+    <MakeDir Directories="$(GameDir)\BepInEx\plugins\CustomBuildings" />
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(GameDir)\BepInEx\plugins\CustomBuildings" />
+  </Target>
+
+</Project>

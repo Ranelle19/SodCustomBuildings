@@ -1,0 +1,12 @@
+D:\SoDmods\SodCustomBuildings\Plugin\bin\Release\net6.0\CustomBuildings.deps.json
+D:\SoDmods\SodCustomBuildings\Plugin\bin\Release\net6.0\CustomBuildings.dll
+D:\SoDmods\SodCustomBuildings\Plugin\bin\Release\net6.0\CustomBuildings.pdb
+D:\SoDmods\SodCustomBuildings\Plugin\obj\Release\net6.0\CustomBuildings.csproj.AssemblyReference.cache
+D:\SoDmods\SodCustomBuildings\Plugin\obj\Release\net6.0\CustomBuildings.GeneratedMSBuildEditorConfig.editorconfig
+D:\SoDmods\SodCustomBuildings\Plugin\obj\Release\net6.0\CustomBuildings.AssemblyInfoInputs.cache
+D:\SoDmods\SodCustomBuildings\Plugin\obj\Release\net6.0\CustomBuildings.AssemblyInfo.cs
+D:\SoDmods\SodCustomBuildings\Plugin\obj\Release\net6.0\CustomBuildings.csproj.CoreCompileInputs.cache
+D:\SoDmods\SodCustomBuildings\Plugin\obj\Release\net6.0\CustomBuildings.dll
+D:\SoDmods\SodCustomBuildings\Plugin\obj\Release\net6.0\refint\CustomBuildings.dll
+D:\SoDmods\SodCustomBuildings\Plugin\obj\Release\net6.0\CustomBuildings.pdb
+D:\SoDmods\SodCustomBuildings\Plugin\obj\Release\net6.0\ref\CustomBuildings.dll
