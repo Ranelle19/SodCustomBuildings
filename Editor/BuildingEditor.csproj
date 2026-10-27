@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <!-- WPF 3D draws the 3D preview (hosted inside the WinForms window). -->
+    <UseWPF>true</UseWPF>
+    <AssemblyName>SodBuildingEditor</AssemblyName>
+    <RootNamespace>BuildingEditor</RootNamespace>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <!-- Lets you build on Linux/macOS too (it only runs on Windows). -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <ApplicationIcon>icon.ico</ApplicationIcon>
+    <Version>1.0.0</Version>
+    <Product>Shadows of Doubt Building Editor</Product>
+    <Company>Ranelle</Company>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\Shared\BuildingDef.cs" Link="Shared\BuildingDef.cs" />
+    <Compile Include="..\Shared\Piers.cs" Link="Shared\Piers.cs" />
+    <Compile Include="..\Shared\EdgePieces.cs" Link="Shared\EdgePieces.cs" />
+  </ItemGroup>
+
+  <!-- The example wall piece (the sea wall with a pier), for Edge > New wall piece from the pier example. -->
+  <ItemGroup>
+    <EmbeddedResource Include="..\Thunderstore\plugins\CustomBuildings\Edge\BoundaryCoastal03\piece.json" LogicalName="example/piece.json" />
+    <EmbeddedResource Include="..\Thunderstore\plugins\CustomBuildings\Edge\BoundaryCoastal03\model\model.obj" LogicalName="example/model.obj" />
+    <EmbeddedResource Include="..\Thunderstore\plugins\CustomBuildings\Edge\BoundaryCoastal03\model\model.mtl" LogicalName="example/model.mtl" />
+    <EmbeddedResource Include="..\Thunderstore\plugins\CustomBuildings\Edge\BoundaryCoastal03\model\tex0.png" LogicalName="example/tex0.png" />
+  </ItemGroup>
+
+  <!-- The plugin travels inside the editor, so the .exe alone can set up a friend's game. Build the plugin first. -->
+  <ItemGroup Condition="Exists('..\Plugin\bin\Release\net6.0\CustomBuildings.dll')">
+    <EmbeddedResource Include="..\Plugin\bin\Release\net6.0\CustomBuildings.dll" LogicalName="CustomBuildings.dll" />
+  </ItemGroup>
+
+</Project>
