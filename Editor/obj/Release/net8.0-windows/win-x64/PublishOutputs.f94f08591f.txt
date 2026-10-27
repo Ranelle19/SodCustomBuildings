@@ -1,0 +1,2 @@
+D:\SoDmods\SodCustomBuildings\Release\SodBuildingEditor.pdb
+D:\SoDmods\SodCustomBuildings\Release\SodBuildingEditor.exe
