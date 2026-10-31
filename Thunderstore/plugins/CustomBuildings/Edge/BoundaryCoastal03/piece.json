@@ -1,0 +1,20 @@
+{
+  "Format": 1,
+  "Id": "BoundaryCoastal03",
+  "DisplayName": "Pier wall",
+  "Enabled": true,
+  "Role": "Straight",
+  "Minimum": 1,
+  "HardLimit": 1,
+  "Model": {
+    "Obj": "model.obj",
+    "Mtl": "model.mtl",
+    "Scale": 1,
+    "SwapYZ": false,
+    "KeepGameWall": false,
+    "CheckReport": [
+      "Ok: the example wall piece: the game's BoundaryCoastal01 with an opening in the railing and a pier (stairs down to a deck 3 m above the water)"
+    ]
+  },
+  "Notes": "Example wall piece that comes with CustomBuildings: one per new city, with a pier. Switch it off with Enabled = false, or export it for Blender and make your own."
+}

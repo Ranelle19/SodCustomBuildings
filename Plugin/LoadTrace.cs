@@ -86,7 +86,7 @@ namespace CustomBuildings
                     var c = CityConstructor.Instance;
                     bool active = false;
                     try { active = c != null && c.loadingOperationActive; } catch { }
-                    if (active) { _cachedForLoad = true; ContentLoader.EnsureAllCached("load start"); }
+                    if (active) { _cachedForLoad = true; ContentLoader.EnsureAllCached("load start"); Exporter.RefreshPlaces(); ModPresetCache.FillAll("load start"); }
                 }
                 else if (CityConstructor.Instance is { } done)
                 {

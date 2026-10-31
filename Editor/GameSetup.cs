@@ -21,6 +21,9 @@ namespace BuildingEditor
     public sealed class EditorSettings
     {
         public string GameDir { get; set; } = "";
+        public bool DarkMode { get; set; }
+        /// <summary>"Light", "Dark" or "Sod" (Shadows of Doubt). Empty: from DarkMode (older settings).</summary>
+        public string Look { get; set; } = "";
 
         private static string FilePath => Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "SodBuildingEditor", "settings.json");

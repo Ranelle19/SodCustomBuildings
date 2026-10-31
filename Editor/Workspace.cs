@@ -210,6 +210,13 @@ namespace BuildingEditor
                 foreach (var layout in b.Def.FloorLayouts.Concat(b.Def.BasementLayouts))
                     for (int i = 0; i < layout.Blueprints.Count; i++)
                         if (layout.Blueprints[i] == old) { layout.Blueprints[i] = newName; b.Dirty = true; }
+            foreach (var b in Buildings)
+            {
+                foreach (var r in b.Def.ReservedPlaces ?? new List<ReservedPlace>())
+                    if (r.Floor == old) { r.Floor = newName; b.Dirty = true; }
+                foreach (var it in b.Def.Furniture ?? new List<FurnitureItem>())
+                    if (it.Floor == old) { it.Floor = newName; b.Dirty = true; }
+            }
         }
 
         /// <summary>Removes a wall piece; its folder goes on save.</summary>
@@ -343,8 +350,25 @@ namespace BuildingEditor
                     var f = b.Floors.FirstOrDefault(x => x.Name == r.Floor);
                     if (f == null) { w.Add($"{d.Id}: a unit on floor '{r.Floor}' is set to always be {r.Place}, but the building has no floor of that name (renamed?)."); continue; }
                     if (r.Address < 1 || r.Address > f.Doc.Addresses.Count) { w.Add($"{d.Id}: {r.Floor} address {r.Address} is set to always be {r.Place}, but that address doesn't exist."); continue; }
-                    if (Catalog.Places.Count > 0 && !Catalog.Places.Any(p => p.Name == r.Place))
-                        w.Add($"{d.Id}: {r.Floor} address {r.Address} is set to always be '{r.Place}', which the game didn't list (a place from a mod that isn't installed?).");
+                    var cp = Catalog.Places.FirstOrDefault(p => p.Name == r.Place);
+                    if (Catalog.Places.Count > 0 && cp == null)
+                        w.Add($"{d.Id}: {r.Floor} address {r.Address} is set to always be '{r.Place}', which the game didn't list (a place from a mod that isn't installed? Start the game with it and load a city once, then reopen the editor).");
+                    else if (cp != null && cp.FromMod)
+                        w.Add($"{d.Id}: {r.Floor} address {r.Address} is always '{r.Place}', which comes from another mod. Say in your building's description that players need that mod; without it the game picks something else for that unit.");
+                }
+
+                foreach (var g in (d.Furniture ?? new List<FurnitureItem>()).GroupBy(x => (x.Floor, x.Address, x.Variation)))
+                {
+                    var f = b.Floors.FirstOrDefault(x => x.Name == g.Key.Floor);
+                    if (f == null) { w.Add($"{d.Id}: furniture is placed on floor '{g.Key.Floor}', but the building has no floor of that name."); continue; }
+                    if (g.Key.Address < 1 || g.Key.Address > f.Doc.Addresses.Count) { w.Add($"{d.Id}: {g.Key.Floor}: furniture is placed in address {g.Key.Address}, which doesn't exist."); continue; }
+                    foreach (var it in g)
+                        if (Catalog.Furniture.Count > 0 && !Catalog.Furniture.Any(c => c.Name == it.Preset))
+                            w.Add($"{d.Id}: {g.Key.Floor} address {g.Key.Address}: '{it.Preset}' isn't furniture the game listed (from a mod that isn't installed?).");
+                    var type = f.Doc.AddressPreset(g.Key.Address - 1);
+                    if ((type == "Residence" || type.StartsWith("Apartment", StringComparison.Ordinal) || type.Contains("Home")) &&
+                        !g.Any(it => (Catalog.Furniture.FirstOrDefault(c => c.Name == it.Preset)?.Classes ?? new List<string>()).Any(c => c.IndexOf("Bed", StringComparison.OrdinalIgnoreCase) >= 0)))
+                        w.Add($"{d.Id}: {g.Key.Floor} address {g.Key.Address} has hand-placed furniture but no bed. The game adds none of its own there, so the people living there have nowhere to sleep.");
                 }
 
                 var cb = FindBaseBuilding(d.BasePreset);

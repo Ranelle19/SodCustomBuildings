@@ -1,0 +1,21 @@
+newmtl m0
+Kd 1 1 1
+map_Kd tex0.png
+
+newmtl Pier_Stairs
+Kd 0.3725 0.3608 0.3412
+
+newmtl Pier_Post
+Kd 0.1843 0.1647 0.1451
+
+newmtl Pier_Deck
+Kd 0.3059 0.2392 0.1725
+
+newmtl Pier_Bollard
+Kd 0.1490 0.1608 0.1686
+
+newmtl Pier_Lamp
+Kd 0.1490 0.1608 0.1686
+
+newmtl collision
+Kd 1 0 1

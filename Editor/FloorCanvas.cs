@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using CustomBuildings.Shared;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Linq;
@@ -7,7 +9,7 @@ using System.Windows.Forms;
 
 namespace BuildingEditor
 {
-    public enum FloorTool { Inspect, Room, Address, Erase, TileType, Wall, TileFlag, Balcony }
+    public enum FloorTool { Inspect, Room, Address, Erase, TileType, Wall, TileFlag, Balcony, Furniture }
 
     /// <summary>Draws a floor plan as a grid of nodes and lets the user paint on it.</summary>
     public sealed class FloorCanvas : Control
@@ -41,6 +43,19 @@ namespace BuildingEditor
         /// <summary>The floor changed (after a stroke ends).</summary>
         public event Action Changed;
         public event Action<string> HoverText;
+
+        // ---- furniture tool
+        /// <summary>The building's hand-placed furniture (null for game floors: the tool is off then).</summary>
+        public List<FurnitureItem> Furniture;
+        /// <summary>Footprint and kind of a piece by name (from the game's catalog).</summary>
+        public Func<string, CatalogFurniture> FurnitureInfo;
+        /// <summary>The piece a click puts down.</summary>
+        public string FurnitureToPlace = "";
+        public int FurnitureAngle;
+        /// <summary>Hand-placed furniture changed.</summary>
+        public event Action FurnitureChanged;
+        private FurnitureItem _dragItem;
+        private Point _dragGrab;
 
         public FloorCanvas()
         {
@@ -178,8 +193,12 @@ namespace BuildingEditor
                 g.DrawRectangle(bp, br);
             }
 
+            PaintFurniture(g);
+
             // hover
-            if (_hover.X >= 0)
+            if (_hover.X >= 0 && Tool == FloorTool.Furniture)
+                PaintFurnitureGhost(g);
+            else if (_hover.X >= 0)
             {
                 using var hp = new Pen(Color.Orange, 2);
                 if (Tool == FloorTool.TileFlag)
@@ -262,6 +281,7 @@ namespace BuildingEditor
             Focus();
             if (!HitCell(e.Location, out int x, out int y, out var edge)) return;
 
+            if (Tool == FloorTool.Furniture && !Doc.ReadOnly) { FurnitureMouseDown(x, y, e.Button); return; }
             if (e.Button == MouseButtons.Right && Tool != FloorTool.Wall && Tool != FloorTool.TileFlag)
             {
                 CellPicked?.Invoke(x, y);   // eyedropper: pick address/room under the cursor
@@ -300,6 +320,15 @@ namespace BuildingEditor
                 HoverText?.Invoke(inside ? Describe(x, y) : "");
             }
             if (_balDrag && inside && _balEnd != new Point(x, y)) { _balEnd = new Point(x, y); Invalidate(); }
+            if (_dragItem != null && inside)
+            {
+                int nx = x - _dragGrab.X, ny = y - _dragGrab.Y;
+                if (nx != _dragItem.X || ny != _dragItem.Y)
+                {
+                    var (w, d) = Footprint(_dragItem);
+                    if (Fits(nx, ny, w, d, _dragItem, out _, out _)) { _dragItem.X = nx; _dragItem.Y = ny; Invalidate(); }
+                }
+            }
             if (_stroke && inside && Tool != FloorTool.Wall && Tool != FloorTool.TileFlag)
                 Apply(x, y, edge, e.Button == MouseButtons.Right);
         }
@@ -307,6 +336,7 @@ namespace BuildingEditor
         protected override void OnMouseUp(MouseEventArgs e)
         {
             base.OnMouseUp(e);
+            if (_dragItem != null) { _dragItem = null; FurnitureChanged?.Invoke(); Invalidate(); return; }
             if (_balDrag)
             {
                 _balDrag = false;
@@ -393,6 +423,9 @@ namespace BuildingEditor
 
         private string Describe(int x, int y)
         {
+            var under = FurnitureAt(x, y);
+            if (Tool == FloorTool.Furniture && under != null)
+                return $"node {x},{y}  {under.Preset} (turned {under.Angle}°): drag to move, right-click or Del to remove, R to turn";
             var (tx, ty) = Doc.TileOf(x, y);
             int a = Doc.AddressAt(x, y);
             var s = $"node {x},{y}  tile {tx},{ty}";
@@ -405,5 +438,175 @@ namespace BuildingEditor
             }
             return s;
         }
-    }
+    
+        // ------------------------------------------------------------------ furniture
+
+        private (int w, int d) Footprint(FurnitureItem it)
+        {
+            var info = FurnitureInfo?.Invoke(it.Preset);
+            return it.Footprint(info?.W ?? 1, info?.D ?? 1);
+        }
+
+        private IEnumerable<FurnitureItem> FurnitureOnThisFloor()
+        {
+            if (Furniture == null || Doc == null) return Enumerable.Empty<FurnitureItem>();
+            return Furniture.Where(f => f.Floor == Doc.Name && f.Variation == (f.Address - 1 == CurrentAddress ? CurrentVariation : 0));
+        }
+
+        private FurnitureItem FurnitureAt(int x, int y)
+        {
+            foreach (var it in FurnitureOnThisFloor().Reverse())
+            {
+                var (w, d) = Footprint(it);
+                if (x >= it.X && y >= it.Y && x < it.X + w && y < it.Y + d) return it;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// The footprint fits if all its cells are in one room of one address (the variation shown) and don't overlap
+        /// other furniture (wall and ceiling pieces may share cells with floor pieces).
+        /// </summary>
+        private bool Fits(int x0, int y0, int w, int d, FurnitureItem ignore, out int address, out string why, string preset = null)
+        {
+            address = -1; why = "";
+            if (Doc == null) return false;
+            int a = Doc.AddressAt(x0, y0);
+            if (a < 0) { why = "not on the floor"; return false; }
+            int v = a == CurrentAddress ? CurrentVariation : 0;
+            var first = Doc.Find(a, v, x0, y0);
+            if (first == null) { why = "not in this layout variation"; return false; }
+            for (int x = x0; x < x0 + w; x++)
+                for (int y = y0; y < y0 + d; y++)
+                {
+                    var n = Doc.Find(a, v, x, y);
+                    if (n == null || n.R != first.R) { why = "it has to fit inside one room"; return false; }
+                }
+            var info = FurnitureInfo?.Invoke(preset ?? ignore?.Preset ?? "");
+            bool layered = info != null && (info.Wall || info.Ceiling);
+            foreach (var it in FurnitureOnThisFloor())
+            {
+                if (it == ignore || it.Address != a + 1) continue;
+                var oi = FurnitureInfo?.Invoke(it.Preset);
+                if (layered || (oi != null && (oi.Wall || oi.Ceiling))) continue;
+                var (ow, od) = Footprint(it);
+                if (x0 < it.X + ow && it.X < x0 + w && y0 < it.Y + od && it.Y < y0 + d) { why = $"it overlaps {it.Preset}"; return false; }
+            }
+            address = a;
+            return true;
+        }
+
+        private void FurnitureMouseDown(int x, int y, MouseButtons button)
+        {
+            if (Furniture == null) return;
+            var under = FurnitureAt(x, y);
+            if (button == MouseButtons.Right)
+            {
+                if (under != null) { Furniture.Remove(under); FurnitureChanged?.Invoke(); Invalidate(); }
+                else CellPicked?.Invoke(x, y);
+                return;
+            }
+            if (under != null) { _dragItem = under; _dragGrab = new Point(x - under.X, y - under.Y); return; }
+            if (string.IsNullOrEmpty(FurnitureToPlace)) { HoverText?.Invoke("Pick a piece of furniture in the list first."); return; }
+            var info = FurnitureInfo?.Invoke(FurnitureToPlace);
+            var item = new FurnitureItem { Floor = Doc.Name, Preset = FurnitureToPlace, Angle = FurnitureAngle, X = x, Y = y };
+            var (w, d) = item.Footprint(info?.W ?? 1, info?.D ?? 1);
+            if (!Fits(x, y, w, d, null, out int a, out var why, FurnitureToPlace)) { HoverText?.Invoke($"Can't put {FurnitureToPlace} here: {why}."); return; }
+            item.Address = a + 1;
+            item.Variation = a == CurrentAddress ? CurrentVariation : 0;
+            Furniture.Add(item);
+            FurnitureChanged?.Invoke();
+            Invalidate();
+        }
+
+        /// <summary>R turns the piece under the mouse (or the one about to be placed); Del removes the one under the mouse.</summary>
+        protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+        {
+            if (Tool == FloorTool.Furniture && Doc != null && !Doc.ReadOnly && Furniture != null)
+            {
+                var under = _hover.X >= 0 ? FurnitureAt(_hover.X, _hover.Y) : null;
+                if (keyData == Keys.R)
+                {
+                    if (under != null)
+                    {
+                        int old = under.Angle;
+                        under.Angle = (under.Angle + 90) % 360;
+                        var (w, d) = Footprint(under);
+                        if (!Fits(under.X, under.Y, w, d, under, out _, out var why)) { under.Angle = old; HoverText?.Invoke($"Can't turn it here: {why}."); }
+                        else FurnitureChanged?.Invoke();
+                    }
+                    else FurnitureAngle = (FurnitureAngle + 90) % 360;
+                    Invalidate();
+                    return true;
+                }
+                if ((keyData == Keys.Delete || keyData == Keys.Back) && under != null)
+                {
+                    Furniture.Remove(under);
+                    FurnitureChanged?.Invoke();
+                    Invalidate();
+                    return true;
+                }
+            }
+            return base.ProcessCmdKey(ref msg, keyData);
+        }
+
+        private void PaintFurniture(Graphics g)
+        {
+            if (Furniture == null) return;
+            foreach (var it in FurnitureOnThisFloor())
+            {
+                bool current = it.Address - 1 == CurrentAddress;
+                var info = FurnitureInfo?.Invoke(it.Preset);
+                DrawPiece(g, it.X, it.Y, it, info, current ? 255 : 120, info == null ? Color.IndianRed : null);
+            }
+        }
+
+        private void PaintFurnitureGhost(Graphics g)
+        {
+            if (_dragItem != null || Furniture == null) return;
+            var under = FurnitureAt(_hover.X, _hover.Y);
+            if (under != null)
+            {
+                var (w, d) = Footprint(under);
+                using var hp = new Pen(Color.White, 2);
+                g.DrawRectangle(hp, Rectangle.Union(CellRect(under.X, under.Y), CellRect(under.X + w - 1, under.Y + d - 1)));
+                return;
+            }
+            if (string.IsNullOrEmpty(FurnitureToPlace)) { using var hp = new Pen(Color.Orange, 2); g.DrawRectangle(hp, CellRect(_hover.X, _hover.Y)); return; }
+            var info = FurnitureInfo?.Invoke(FurnitureToPlace);
+            var ghost = new FurnitureItem { Preset = FurnitureToPlace, Angle = FurnitureAngle, X = _hover.X, Y = _hover.Y };
+            var (gw, gd) = ghost.Footprint(info?.W ?? 1, info?.D ?? 1);
+            bool ok = Fits(_hover.X, _hover.Y, gw, gd, null, out _, out _, FurnitureToPlace);
+            DrawPiece(g, _hover.X, _hover.Y, ghost, info, 150, ok ? Color.LightGreen : Color.IndianRed);
+        }
+
+        /// <summary>A piece as seen from above: its footprint, its name, and a mark on the side it faces.</summary>
+        private void DrawPiece(Graphics g, int x, int y, FurnitureItem it, CatalogFurniture info, int alpha, Color? tint)
+        {
+            var (w, d) = it.Footprint(info?.W ?? 1, info?.D ?? 1);
+            var r = Rectangle.Union(CellRect(x, y), CellRect(x + w - 1, y + d - 1));
+            r.Inflate(-2, -2);
+            var baseCol = tint ?? (info?.Wall == true ? Color.FromArgb(214, 160, 70) : info?.Ceiling == true ? Color.FromArgb(120, 170, 230) : Color.FromArgb(235, 228, 214));
+            using (var fill = new SolidBrush(Color.FromArgb(alpha * 150 / 255, 20, 18, 26))) g.FillRectangle(fill, r);
+            using (var pen = new Pen(Color.FromArgb(alpha, baseCol), 2) { DashStyle = info?.Ceiling == true ? DashStyle.Dash : DashStyle.Solid }) g.DrawRectangle(pen, r);
+            // facing mark: a small triangle on the front edge (0 = down the plan, then clockwise)
+            var c = new PointF(r.X + r.Width / 2f, r.Y + r.Height / 2f);
+            float s = Math.Max(3, Math.Min(r.Width, r.Height) / 5f);
+            PointF[] tri = (((it.Angle % 360) + 360) % 360) switch
+            {
+                90 => new[] { new PointF(r.Left + 1, c.Y - s), new PointF(r.Left + 1, c.Y + s), new PointF(r.Left + 1 + s, c.Y) },
+                180 => new[] { new PointF(c.X - s, r.Top + 1), new PointF(c.X + s, r.Top + 1), new PointF(c.X, r.Top + 1 + s) },
+                270 => new[] { new PointF(r.Right - 1, c.Y - s), new PointF(r.Right - 1, c.Y + s), new PointF(r.Right - 1 - s, c.Y) },
+                _ => new[] { new PointF(c.X - s, r.Bottom - 1), new PointF(c.X + s, r.Bottom - 1), new PointF(c.X, r.Bottom - 1 - s) },
+            };
+            using (var fb = new SolidBrush(Color.FromArgb(alpha, baseCol))) g.FillPolygon(fb, tri);
+            if (CellSize >= 12)
+            {
+                using var tb = new SolidBrush(Color.FromArgb(alpha, Color.White));
+                var rf = new RectangleF(r.X + 2, r.Y + 1, r.Width - 4, r.Height - 2);
+                using var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center, Trimming = StringTrimming.EllipsisCharacter };
+                g.DrawString(it.Preset, Font, tb, rf, sf);
+            }
+        }
+}
 }

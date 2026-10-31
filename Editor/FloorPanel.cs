@@ -30,7 +30,14 @@ namespace BuildingEditor
         private readonly CheckBox _mirror = new() { Text = "Both sides", Checked = true, AutoSize = true, Margin = new Padding(3, 7, 3, 3) };
         private readonly ComboBox _flag = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 130 };
         private readonly ComboBox _rotation = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 60 };
-        private readonly Control[] _wallOpts, _typeOpts, _flagOpts, _balconyOpts;
+        private readonly Control[] _wallOpts, _typeOpts, _flagOpts, _balconyOpts, _furnOpts;
+        private readonly ComboBox _furniture = new()
+        {
+            DropDownStyle = ComboBoxStyle.DropDown, Width = 260,
+            AutoCompleteMode = AutoCompleteMode.SuggestAppend, AutoCompleteSource = AutoCompleteSource.ListItems,
+        };
+        private readonly ComboBox _furnFilter = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 110 };
+        private readonly Label _furnAngle = new() { AutoSize = true, Margin = new Padding(4, 7, 0, 0) };
         private readonly ComboBox _balRailing = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 190 };
         private readonly ComboBox _balDoor = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 170 };
 
@@ -58,10 +65,16 @@ namespace BuildingEditor
         private Control[] _editOnly;
         private readonly ComboBox _place = new() { Dock = DockStyle.Top, DropDownStyle = ComboBoxStyle.DropDownList };
         private const string PlaceAny = "(the game picks, like for its own buildings)";
+        private const string FromModTag = "  [from a mod]";
+        private readonly Label _placeNote = new() { Dock = DockStyle.Top, Height = 46, ForeColor = Color.DarkGoldenrod, Visible = false,
+            Text = "This kind of place comes from another mod. Everyone who plays your building needs that mod too. Without it the " +
+                   "game just picks something else for this unit (nothing breaks), but a city made WITH it can only be loaded with it." };
 
         public event Action Changed;
         public event Action<string> Status;
         public event Action Preview3DRequested;
+        /// <summary>The "Furnish (3D)…" button: open the furnishing window for this floor's building.</summary>
+        public event Action<BuildingEntry> FurnishRequested;
 
         public FloorPanel(Workspace ws)
         {
@@ -78,6 +91,12 @@ namespace BuildingEditor
             _typeOpts = new Control[] { _tileType };
             _wallOpts = new Control[] { _wallPreset, _mirror };
             _flagOpts = new Control[] { _flag, _rotation };
+            _furnOpts = new Control[]
+            {
+                _furnFilter, _furniture, SmallBtn("Turn (R)", (s, e) => { _canvas.FurnitureAngle = (_canvas.FurnitureAngle + 90) % 360; UpdateFurnAngle(); _canvas.Invalidate(); }, 70), _furnAngle,
+            };
+            _furnFilter.Items.AddRange(new object[] { "All", "On the floor", "On walls", "On ceilings", "From mods" });
+            _furnFilter.SelectedIndex = 0;
             _balconyOpts = new Control[]
             {
                 new Label { Text = "Edge:", AutoSize = true, Margin = new Padding(6, 7, 0, 0) }, _balRailing,
@@ -94,6 +113,9 @@ namespace BuildingEditor
             Controls.Add(_tools);
 
             _canvas.Changed += () => { RefreshRooms(); UpdateSizeLabel(); Changed?.Invoke(); };
+            _canvas.FurnitureChanged += () => { if (_entry?.Owner != null) _entry.Owner.Dirty = true; FurnitureRules.RaiseChanged(_canvas); Changed?.Invoke(); };
+            // furniture placed in the 3D view shows here right away
+            FurnitureRules.Changed += src => { if (src != _canvas && !IsDisposed) _canvas.Invalidate(); };
             _canvas.CellPicked += OnCellPicked;
             _canvas.StructureChanged += Reload;
             _canvas.HoverText += t => Status?.Invoke(t);
@@ -128,8 +150,16 @@ namespace BuildingEditor
             _tools.Controls.Add(ToolButton("Walls", FloorTool.Wall, "Left-click a cell edge to place the selected wall/door/window, right-click to remove."));
             _tools.Controls.Add(ToolButton("Entrances & stairs", FloorTool.TileFlag, "Left-click a tile to set the flag, right-click to clear."));
             _tools.Controls.Add(ToolButton("Balcony", FloorTool.Balcony, "Drag over cells along an outer wall: they become a balcony you can walk on, with a door and a railing."));
+            var furnish = SmallBtn("Furnish (3D)…", (s, e) =>
+            {
+                if (_entry?.Owner == null) { Status?.Invoke("Furniture can only be placed in your own buildings' floors."); return; }
+                FurnishRequested?.Invoke(_entry.Owner);
+            }, 100);
+            new ToolTip().SetToolTip(furnish, "Open the furnishing window: pick furniture from the catalog and put it down in the building's 3D view. A unit that has any gets exactly this furniture in the game.");
+            _tools.Controls.Add(furnish);
             _tools.Controls.Add(new Label { Text = " ", Width = 8 });
             foreach (var c in _typeOpts.Concat(_wallOpts).Concat(_flagOpts).Concat(_balconyOpts)) _tools.Controls.Add(c);
+            foreach (var c in _furnOpts) c.Visible = false;
             _tools.Controls.Add(new Label { Text = " ", Width = 8 });
             _tools.Controls.Add(SmallBtn("Undo", (s, e) => DoUndo(), 55));
             _tools.Controls.Add(SmallBtn("Redo", (s, e) => DoRedo(), 55));
@@ -144,6 +174,8 @@ namespace BuildingEditor
             _rotation.SelectedIndexChanged += (s, e) => _canvas.TileRotation = _rotation.SelectedIndex * 90;
             _balRailing.SelectedIndexChanged += (s, e) => _canvas.BalconyRailing = GameNames.WallIdFromLabel(_balRailing.Text);
             _balDoor.SelectedIndexChanged += (s, e) => _canvas.BalconyDoor = GameNames.WallIdFromLabel(_balDoor.Text);
+            _furniture.TextChanged += (s, e) => _canvas.FurnitureToPlace = FurnName(_furniture.Text);
+            _furnFilter.SelectedIndexChanged += (s, e) => FillFurniture();
         }
 
         /// <summary>Railing and door choices for the balcony tool, from the game's wall list.</summary>
@@ -206,11 +238,12 @@ namespace BuildingEditor
             vars.Controls.Add(varRow);
 
             // addresses
-            var addrs = Group("Addresses (apartments, shops, halls)", 300);
+            var addrs = Group("Addresses (apartments, shops, halls)", 346);
             var addrBtns = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 32 };
             addrBtns.Controls.Add(SmallBtn("Add", (s, e) => AddAddress(), 55));
             addrBtns.Controls.Add(SmallBtn("Delete", (s, e) => DeleteAddress(), 60));
             addrBtns.Controls.Add(SmallBtn("Colour…", (s, e) => PickColour(), 70));
+            addrs.Controls.Add(_placeNote);
             addrs.Controls.Add(_place);
             addrs.Controls.Add(new Label { Text = "Always make it this kind of place:", Dock = DockStyle.Top, Height = 18 });
             addrs.Controls.Add(_addrPreset);
@@ -265,6 +298,7 @@ namespace BuildingEditor
                 if (_place.SelectedIndex > 0 && !text.StartsWith("—", StringComparison.Ordinal))
                     list.Add(new ReservedPlace { Floor = _doc.Name, Address = addr, Place = text.Split(new[] { "  " }, StringSplitOptions.None)[0] });
                 _entry.Owner.Dirty = true;
+                UpdatePlaceNote();
                 Changed?.Invoke();
             };
             _addresses.SelectedIndexChanged += (s, e) =>
@@ -346,6 +380,9 @@ namespace BuildingEditor
             }
             FillCombo(_addrPreset, _ws.AddressPresets.Select(GameNames.AddressTypeLabel));
             FillBalconyChoices();
+            _canvas.Furniture = entry?.Owner != null ? (entry.Owner.Def.Furniture ??= new List<FurnitureItem>()) : null;
+            _canvas.FurnitureInfo = FurnInfo;
+            FillFurniture();
             FillCombo(_roomLayout, _ws.RoomLayouts);
 
             _floorName.Text = doc.Name + (doc.ReadOnly ? "  (game floor, read-only)" : "");
@@ -419,7 +456,7 @@ namespace BuildingEditor
             if (!own) { _place.SelectedIndex = 0; return; }
             var type = _doc.AddressPreset(a);
             var places = _ws.Catalog.Places ?? new List<CatalogPlace>();
-            string PlaceLabel(CatalogPlace p) => p.Name + (p.OnlyIn.Count > 0 ? $"  (normally only in {string.Join(", ", p.OnlyIn.Take(3))})" : "");
+            string PlaceLabel(CatalogPlace p) => p.Name + (p.FromMod ? FromModTag : "") + (p.OnlyIn.Count > 0 ? $"  (normally only in {string.Join(", ", p.OnlyIn.Take(3))})" : "");
             foreach (var p in places.Where(x => x.Fits.Contains(type)).OrderBy(x => x.Name)) _place.Items.Add(PlaceLabel(p));
             var others = places.Where(x => !x.Fits.Contains(type)).OrderBy(x => x.Name).ToList();
             if (others.Count > 0)
@@ -433,10 +470,24 @@ namespace BuildingEditor
             {
                 for (int i = 0; i < _place.Items.Count; i++)
                     if (((string)_place.Items[i]).Split(new[] { "  " }, StringSplitOptions.None)[0] == current.Place) { idx = i; break; }
-                if (idx == 0) { _place.Items.Add(current.Place); idx = _place.Items.Count - 1; }
+                if (idx == 0) { _place.Items.Add(current.Place + "  [not installed]"); idx = _place.Items.Count - 1; }
             }
             _place.SelectedIndex = idx;
-            if (places.Count == 0) _place.Items[0] = PlaceAny + " – start the game once with plugin 1.4 to list the places";
+            if (places.Count == 0) _place.Items[0] = PlaceAny + " – start the game once to list the places";
+            UpdatePlaceNote();
+        }
+
+        /// <summary>The note under the dropdown when the reserved place comes from another mod (or isn't installed).</summary>
+        private void UpdatePlaceNote()
+        {
+            var text = _place.SelectedItem as string ?? "";
+            bool mod = text.Contains(FromModTag) || text.Contains("[not installed]");
+            _placeNote.Visible = mod && _place.SelectedIndex > 0;
+            _placeNote.Text = text.Contains("[not installed]")
+                ? "The game didn't list this kind of place: its mod isn't installed here (or the game hasn't been started with it). " +
+                  "Without that mod the game just picks something else for this unit."
+                : "This kind of place comes from another mod. Everyone who plays your building needs that mod too. Without it the " +
+                  "game just picks something else for this unit (nothing breaks), but a city made WITH it can only be loaded with it.";
         }
 
         private void RefreshRooms()
@@ -476,14 +527,14 @@ namespace BuildingEditor
 
         private void DrawAddress(object sender, DrawItemEventArgs e)
         {
-            e.DrawBackground();
+            Theme.DrawItemBackground(e);
             if (e.Index < 0 || _doc == null || e.Index >= _doc.Addresses.Count) return;
             var r = e.Bounds;
             using (var b = new SolidBrush(_doc.AddressColor(e.Index))) e.Graphics.FillRectangle(b, r.X + 3, r.Y + 3, 14, r.Height - 6);
             var preset = _doc.AddressPreset(e.Index);
             int cells = _doc.NodesIn(e.Index, 0).Count();
             TextRenderer.DrawText(e.Graphics, $"{e.Index + 1}. {(preset.Length > 0 ? GameNames.AddressTypeLabel(preset) : "(no type)")}  ·  {cells} cells",
-                e.Font, new Point(r.X + 22, r.Y + 2), e.ForeColor);
+                e.Font, new Point(r.X + 22, r.Y + 2), Theme.ItemFore(e));
             e.DrawFocusRectangle();
         }
 
@@ -498,6 +549,8 @@ namespace BuildingEditor
             foreach (var c in _wallOpts) c.Visible = tool == FloorTool.Wall;
             foreach (var c in _flagOpts) c.Visible = tool == FloorTool.TileFlag;
             foreach (var c in _balconyOpts) c.Visible = tool == FloorTool.Balcony;
+            foreach (var c in _furnOpts) c.Visible = tool == FloorTool.Furniture;
+            UpdateFurnAngle();
             _hint.Text = tool switch
             {
                 FloorTool.Inspect => "Click a cell to see its raw data on the right.",
@@ -507,11 +560,50 @@ namespace BuildingEditor
                 FloorTool.TileType => "Drag to set the floor/ceiling type. Marks: × none, F floor only, C ceiling only, i indoors.",
                 FloorTool.Wall => "Click near a cell edge to place the chosen wall/door/window; right-click to remove. Orange = door, blue = window.",
                 FloorTool.TileFlag => "Click a tile (thick grid) to set the flag; right-click clears it. Stairs and lifts use the rotation.",
+ FloorTool.Furniture => _canvas.Furniture == null
+                    ? "Furniture can only be placed in your own buildings' floors."
+                    : "Pick a piece, click to put it down (green = fits). Drag to move, R to turn, right-click or Del to remove. A unit with any furniture gets exactly this in the game: put in everything it needs (a bed in homes!).",
                 FloorTool.Balcony => "Drag over cells along an outer wall (e.g. one tile, 3×3). They become an open-air Rooftop terrace with a door into the room next to it. Undo works.",
                 _ => "",
             };
             _canvas.Invalidate();
         }
+
+        private Dictionary<string, CatalogFurniture> _furnByName;
+
+        private CatalogFurniture FurnInfo(string name)
+        {
+            if (_furnByName == null || _furnByName.Count != _ws.Catalog.Furniture.Count)
+                _furnByName = _ws.Catalog.Furniture.GroupBy(f => f.Name).ToDictionary(g => g.Key, g => g.First());
+            return name != null && _furnByName.TryGetValue(name, out var f) ? f : null;
+        }
+
+        private static string FurnLabel(CatalogFurniture f) =>
+            $"{f.Name}  ({f.W}×{f.D}{(f.Wall ? ", wall" : "")}{(f.Ceiling ? ", ceiling" : "")}{(f.FromMod ? ", from a mod" : "")})";
+
+        private static string FurnName(string label) => (label ?? "").Split(new[] { "  (" }, StringSplitOptions.None)[0].Trim();
+
+        private void FillFurniture()
+        {
+            var keep = _furniture.Text;
+            IEnumerable<CatalogFurniture> list = _ws.Catalog.Furniture;
+            list = _furnFilter.SelectedIndex switch
+            {
+                1 => list.Where(f => !f.Wall && !f.Ceiling),
+                2 => list.Where(f => f.Wall),
+                3 => list.Where(f => f.Ceiling),
+                4 => list.Where(f => f.FromMod),
+                _ => list,
+            };
+            _furniture.BeginUpdate();
+            _furniture.Items.Clear();
+            foreach (var f in list) _furniture.Items.Add(FurnLabel(f));
+            _furniture.EndUpdate();
+            if (_ws.Catalog.Furniture.Count == 0) _furniture.Text = "(start the game once with the new plugin to list the furniture)";
+            else _furniture.Text = keep;
+        }
+
+        private void UpdateFurnAngle() => _furnAngle.Text = $"turned {_canvas.FurnitureAngle}°";
 
         private void OnCellPicked(int x, int y)
         {

@@ -13,7 +13,7 @@ namespace CustomBuildings
         public const string Guid = "Ranelle.sod.custombuildings";
         private const string OldGuid = "felix.sod.custombuildings";   // before 1.4.1; its settings are carried over once
         public const string Name = "CustomBuildings";
-        public const string Version = "1.0.0";   // keep in step with <Version> in CustomBuildings.csproj
+        public const string Version = "1.0.1";   // keep in step with <Version> in CustomBuildings.csproj
 
         internal static ManualLogSource L;
         internal static string ModDir;

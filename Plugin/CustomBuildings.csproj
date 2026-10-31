@@ -4,7 +4,7 @@
     <TargetFramework>net6.0</TargetFramework>
     <AssemblyName>CustomBuildings</AssemblyName>
     <!-- Keep in step with Plugin.Version (builds without a version were 1.0.0). The editor compares this to never install an older plugin over a newer one. -->
-    <Version>1.0.0</Version>
+    <Version>1.0.1</Version>
     <RootNamespace>CustomBuildings</RootNamespace>
     <LangVersion>latest</LangVersion>
     <Nullable>disable</Nullable>

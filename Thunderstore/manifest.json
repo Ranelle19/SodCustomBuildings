@@ -1,0 +1,9 @@
+{
+  "name": "CustomBuildings",
+  "version_number": "1.0.1",
+  "website_url": "",
+  "description": "Your own buildings, floor plans, exteriors and sea wall pieces (with a walkable pier) in new cities. Comes with an editor. Works with SOD MP.",
+  "dependencies": [
+    "BepInEx-BepInExPack_IL2CPP-6.0.788"
+  ]
+}

@@ -1,6 +1,6 @@
 # Custom Buildings for Shadows of Doubt
 
-**Version 1.0.0** · by Ranelle
+**Version 1.0.1** · by Ranelle
 
 Make your own buildings for Shadows of Doubt: your own floor plans inside, your own outside if you want, and shops, flats, offices and restaurants that the game fills like its own. Everything is in **one file: `SodBuildingEditor.exe`**. It contains the building editor *and* the game plugin, and sets the game up for you.
 
@@ -108,6 +108,10 @@ The plugin needs only BepInEx. It's been used alongside SOD MP, SOD API, SOD-Opt
 
 ---
 
+## For mod makers
+
+Your mod adds its own kinds of places, rooms or furniture? With a few lines they work with custom buildings: building makers can reserve a unit for your place in the editor, and saved cities keep it. See **MODDING.md** on the GitHub page (checklist, example code, and a small optional API, `CustomBuildings.Api`).
+
 ## Something's wrong?
 
 | Problem | Try this |
@@ -117,8 +121,8 @@ The plugin needs only BepInEx. It's been used alongside SOD MP, SOD API, SOD-Opt
 | Loading takes very long | Make sure the plugin is up to date (setup window, step 3) |
 | Windows don't match the floors | The floor layouts add up to a different number of storeys than the building's model. The editor shows the right number |
 | The setup says "older" or "Update" | Click **Update**. Your buildings are kept |
-| The setup says the installed plugin is "newer" (you used a test build, 1.1–1.9) | Click **Use 1.0.0** |
-| The game freezes for a moment now and then | Make sure the plugin is 1.0.0 (setup window, step 3); older test builds searched the whole city every few seconds |
+| The setup says the installed plugin is "newer" (you used a test build, 1.1–1.9) | Click **Use 1.0.1** |
+| The game freezes for a moment now and then | Make sure the plugin is 1.0.0 or newer (setup window, step 3); older test builds searched the whole city every few seconds |
 
 The settings are in `BepInEx\config\Ranelle.sod.custombuildings.cfg` (created on the first game start). Settings from older versions (`felix.sod.custombuildings.cfg`) are carried over automatically.
 

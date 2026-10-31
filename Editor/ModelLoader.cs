@@ -15,6 +15,7 @@ namespace BuildingEditor
         public string Material = "";
         public string TexturePath;      // diffuse PNG, or null
         public string EmissionPath;     // lit-windows PNG, or null
+        public Vector3 Kd = Vector3.One; // material colour (multiplies the texture; the colour when there is none)
         public readonly List<Vector3> Pos = new();
         public readonly List<Vector3> Nrm = new();
         public readonly List<Vector2> Uv = new();
@@ -91,7 +92,7 @@ namespace BuildingEditor
                 if (!meshes.TryGetValue(mat, out var m))
                 {
                     m = new ModelMesh { Material = mat };
-                    if (materials.TryGetValue(mat, out var maps2)) { m.TexturePath = maps2.diffuse; m.EmissionPath = maps2.emission; }
+                    if (materials.TryGetValue(mat, out var maps2)) { m.TexturePath = maps2.diffuse; m.EmissionPath = maps2.emission; m.Kd = maps2.kd; }
                     meshes[mat] = m;
                     maps[m] = new Dictionary<(int, int, int), int>();
                 }
@@ -178,15 +179,16 @@ namespace BuildingEditor
             return idx;
         }
 
-        private static Dictionary<string, (string diffuse, string emission)> ReadMtl(string path, string folder)
+        private static Dictionary<string, (string diffuse, string emission, Vector3 kd)> ReadMtl(string path, string folder)
         {
-            var result = new Dictionary<string, (string, string)>();
+            var result = new Dictionary<string, (string, string, Vector3)>();
             if (!File.Exists(path)) return result;
             string name = null;
             string diffuse = null, emission = null;
+            var kd = Vector3.One;
             void Flush()
             {
-                if (name != null) result[name] = (diffuse, emission);
+                if (name != null) result[name] = (diffuse, emission, kd);
             }
             foreach (var raw in File.ReadLines(path))
             {
@@ -196,6 +198,13 @@ namespace BuildingEditor
                     Flush();
                     name = line.Substring(7).Trim();
                     diffuse = emission = null;
+                    kd = Vector3.One;
+                }
+                else if (line.StartsWith("Kd "))
+                {
+                    var k = line.Substring(3).Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                    if (k.Length >= 3 && float.TryParse(k[0], NumberStyles.Float, Inv, out var r) && float.TryParse(k[1], NumberStyles.Float, Inv, out var g)
+                        && float.TryParse(k[2], NumberStyles.Float, Inv, out var b)) kd = new Vector3(r, g, b);
                 }
                 else if (line.StartsWith("map_Kd ")) diffuse = Existing(folder, line.Substring(7).Trim());
                 else if (line.StartsWith("map_Ke ")) emission = Existing(folder, line.Substring(7).Trim());

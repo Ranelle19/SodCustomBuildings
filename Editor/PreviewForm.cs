@@ -57,6 +57,20 @@ namespace BuildingEditor
         private readonly CheckBox _randomVars = new() { Dock = DockStyle.Top, Text = "Random address variations", Height = 24 };
         private readonly Label _stats = new() { Dock = DockStyle.Top, Height = 40, ForeColor = Color.DimGray };
 
+        // furniture placing in 3D
+        private readonly CheckBox _placeFurn = new() { Dock = DockStyle.Top, Text = "Place furniture here (left click)", Height = 24 };
+        private readonly ComboBox _furnPick = new()
+        {
+            Dock = DockStyle.Top, DropDownStyle = ComboBoxStyle.DropDown,
+            AutoCompleteMode = AutoCompleteMode.SuggestAppend, AutoCompleteSource = AutoCompleteSource.ListItems,
+        };
+        private readonly Label _furnHint = new() { Dock = DockStyle.Top, Height = 64, ForeColor = Color.DimGray,
+            Text = "Pick a storey in the list above, then click on its floor. Drag a piece to move it, R turns, right-click or Del removes. Right-drag turns the camera, middle-drag moves it." };
+        private int _furnAngle;
+        private FurnitureItem _furnDrag;
+        private (int x, int y) _furnGrab;
+        private (int x, int y, bool ok, FurnitureItem under)? _furnHover;
+
         // game model
         private readonly CheckBox _showModel = new() { Dock = DockStyle.Top, Text = "Show the game's model", Checked = true, Height = 24 };
         private readonly ComboBox _look = new() { Dock = DockStyle.Top, DropDownStyle = ComboBoxStyle.DropDownList };
@@ -70,27 +84,45 @@ namespace BuildingEditor
         private readonly NumericUpDown _storey = new() { Minimum = 0, Maximum = 50, Increment = 0.1m, DecimalPlaces = 2, Width = 60 };
         private Control _alignPanel;
 
-        public PreviewForm(Workspace ws, BuildingEntry building) : this(ws)
+        public PreviewForm(Workspace ws, BuildingEntry building) : this(ws, building, false) { }
+
+        /// <summary>furnish: the furnishing window (catalog on the left, storeys, the 3D view to place furniture in).</summary>
+        public PreviewForm(Workspace ws, BuildingEntry building, bool furnish) : this(ws, furnish)
         {
             _building = building;
-            Text = $"3D preview: {building.Def.Id}";
+            Text = furnish ? $"Furnish: {building.Def.Id}" : $"3D preview: {building.Def.Id}";
+            _opt.Furniture = building.Def.Furniture ??= new List<FurnitureItem>();
+            if (furnish) _showModel.Checked = false;
             LoadModel();
             Rebuild(keepCamera: false);
+            if (furnish) FurnishReady();
         }
 
-        public PreviewForm(Workspace ws, FloorDoc doc, string name) : this(ws)
+        /// <summary>What File > Save does in the main window (the furnishing window's Save button and Ctrl+S).</summary>
+        public Action SaveRequested;
+
+        /// <summary>The building this furnishing window is for (null for a plain preview).</summary>
+        public BuildingEntry Furnishing => _furnish ? _building : null;
+
+        public PreviewForm(Workspace ws, FloorDoc doc, string name) : this(ws, false)
         {
             _singleDoc = doc;
             _singleName = name;
+            _opt.Furniture = ws.Buildings.FirstOrDefault(b => b.Floors.Any(f => f.Doc == doc || f.Name == name))?.Def.Furniture;
             Text = $"3D preview: {name}";
             LoadModel();
             Rebuild(keepCamera: false);
         }
 
-        private PreviewForm(Workspace ws)
+        private readonly bool _furnish;
+
+        private PreviewForm(Workspace ws, bool furnish)
         {
             AppIcon.Apply(this);
             _ws = ws;
+            _furnish = furnish;
+            _opt.FurnitureInfo = n => ws.Catalog.Furniture.FirstOrDefault(f => f.Name == n);
+            _opt.HasModel = n => FurnitureModel(n) != null;
             Width = 1300;
             Height = 860;
             StartPosition = FormStartPosition.CenterParent;
@@ -179,6 +211,8 @@ namespace BuildingEditor
             Controls.Add(side);
 
             _floors.DrawItem += DrawFloorItem;
+            SetupFurniture();
+            if (_furnish) BuildFurnishUi(side);
             _floors.SelectedIndexChanged += (s, e) => { if (!_loading) { LoadPlanChoices(); ApplyCut(); } };
             _plan.SelectedIndexChanged += (s, e) =>
             {
@@ -209,6 +243,477 @@ namespace BuildingEditor
             _storey.ValueChanged += (s, e) => { if (_loading) return; _align.StoreyHeight = (float)_storey.Value; AlignChanged(); };
         }
 
+        // ------------------------------------------------------------------ the furnishing window
+
+        private readonly FlowLayoutPanel _storeyStrip = new() { Dock = DockStyle.Left, Width = 58, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true, Padding = new Padding(6, 8, 0, 0) };
+        private readonly ListView _catalog = new() { Dock = DockStyle.Fill, View = View.LargeIcon, MultiSelect = false, HideSelection = false, BorderStyle = BorderStyle.None };
+        private readonly ImageList _thumbs = new() { ImageSize = new Size(96, 96), ColorDepth = ColorDepth.Depth32Bit };
+        private readonly TextBox _search = new() { Dock = DockStyle.Top, PlaceholderText = "Search…" };
+        private readonly ComboBox _catFilter = new() { Dock = DockStyle.Top, DropDownStyle = ComboBoxStyle.DropDownList };
+        private readonly Queue<ListViewItem> _thumbQueue = new();
+        private readonly Timer _thumbTimer = new() { Interval = 30 };
+        private readonly List<List<FurnitureItem>> _history = new();
+        private int _historyAt = -1;
+        private FurnitureItem _furnLast;
+
+        private void BuildFurnishUi(Panel side)
+        {
+            side.Visible = false;
+
+            // left: the catalog
+            var cat = new Panel { Dock = DockStyle.Left, Width = 290, Padding = new Padding(8) };
+            _catFilter.Items.AddRange(new object[] { "All", "On the floor", "On walls", "On ceilings", "From mods", "Used in this building" });
+            _catFilter.SelectedIndex = 0;
+            _thumbs.Images.Add("wait", Placeholder("…"));
+            _thumbs.Images.Add("none", Placeholder("no model"));
+            _catalog.LargeImageList = _thumbs;
+            var catControls = new Control[]
+            {
+                new Label { Text = "CATALOG · FURNITURE", Dock = DockStyle.Top, Height = 22, Font = new Font(Font, FontStyle.Bold) },
+                _search, new Panel { Dock = DockStyle.Top, Height = 4 }, _catFilter, new Panel { Dock = DockStyle.Top, Height = 6 },
+            };
+            cat.Controls.Add(_catalog);
+            for (int i = catControls.Length - 1; i >= 0; i--) cat.Controls.Add(catControls[i]);
+
+            // top: tools
+            var bar = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 40, Padding = new Padding(6, 5, 6, 0), WrapContents = false };
+            Button B(string t, Action a, int w = 0)
+            {
+                var b = new Button { Text = t, AutoSize = w == 0, Width = w > 0 ? w : 75, Height = 28, Margin = new Padding(2, 0, 2, 0) };
+                b.Click += (s, e) => a();
+                return b;
+            }
+            RadioButton R(string t, Action a, bool on = false)
+            {
+                var r = new RadioButton { Text = t, Appearance = Appearance.Button, AutoSize = true, Height = 28, Checked = on, Margin = new Padding(1, 0, 1, 0), TextAlign = ContentAlignment.MiddleCenter, MinimumSize = new Size(44, 28) };
+                r.CheckedChanged += (s, e) => { if (r.Checked) a(); };
+                return r;
+            }
+            var walls = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(12, 0, 0, 0) };
+            walls.Controls.Add(new Label { Text = "Walls", AutoSize = true, Margin = new Padding(0, 7, 4, 0) });
+            walls.Controls.Add(R("Full", () => SetWalls(1f), true));
+            walls.Controls.Add(R("Low", () => SetWalls(0.3f)));
+            walls.Controls.Add(R("Off", () => SetWalls(0f)));
+            var model = new CheckBox { Text = "Building model", AutoSize = true, Margin = new Padding(12, 6, 0, 0) };
+            model.CheckedChanged += (s, e) => { _showModel.Checked = model.Checked; };
+            foreach (var c in new Control[]
+            {
+                new Label { Text = _building?.Def.Id ?? "", AutoSize = true, Font = new Font(Font.FontFamily, 10.5f, FontStyle.Bold), Margin = new Padding(0, 6, 14, 0) },
+                B("↶ Undo", Undo), B("↷ Redo", Redo),
+                B("Turn (R)", () => TurnPiece(_furnHover?.under ?? _furnLast)), B("Remove (Del)", () => RemovePiece(_furnHover?.under ?? _furnLast)),
+                walls, model,
+                B("Reset view", () => _view.ResetView()), B("Save", () => SaveRequested?.Invoke()),
+            }) bar.Controls.Add(c);
+
+            // bottom: what the mouse is over / what happens on click
+            _furnHint.Parent?.Controls.Remove(_furnHint);
+            _furnHint.Dock = DockStyle.Bottom;
+            _furnHint.Height = 26;
+            _furnHint.Padding = new Padding(8, 5, 0, 0);
+            _furnHint.Text = "Pick a piece on the left, then click in the view. Drag a piece to move it · R turns · Del / right-click removes · right-drag turns the camera · middle-drag moves it · wheel zooms";
+
+            Controls.Add(_storeyStrip);
+            Controls.Add(cat);
+            Controls.Add(_furnHint);
+            Controls.Add(bar);
+
+            _search.TextChanged += (s, e) => FillCatalog();
+            _catFilter.SelectedIndexChanged += (s, e) => FillCatalog();
+            _catalog.SelectedIndexChanged += (s, e) =>
+            {
+                if (_catalog.SelectedItems.Count == 0) return;
+                _furnPick.Text = (string)_catalog.SelectedItems[0].Tag;
+                _furnHover = null;
+            };
+            _thumbTimer.Tick += (s, e) => NextThumb();
+            FormClosed += (s, e) => _thumbTimer.Stop();
+            KeyDown += (s, e) =>
+            {
+                if (e.Control && e.KeyCode == Keys.Z) { Undo(); e.Handled = true; }
+                else if (e.Control && e.KeyCode == Keys.Y) { Redo(); e.Handled = true; }
+                else if (e.Control && e.KeyCode == Keys.S) { SaveRequested?.Invoke(); e.Handled = true; }
+            };
+        }
+
+        /// <summary>After the building is loaded: storeys, catalog, the first undo step.</summary>
+        private void FurnishReady()
+        {
+            _placeFurn.Checked = true;   // turns on placing in the view
+            FillStoreys();
+            FillCatalog();
+            Remember();
+            _thumbTimer.Start();
+        }
+
+        private void SetWalls(float scale)
+        {
+            _opt.Walls = scale > 0;
+            _opt.WallScale = scale > 0 ? scale : 1f;
+            RebuildFaces();
+        }
+
+        private void FillStoreys()
+        {
+            _storeyStrip.Controls.Clear();
+            for (int i = 0; i < _slots.Count; i++)
+            {
+                var slot = _slots[_slots.Count - 1 - i];   // top first, like the storey list
+                int listIndex = i;
+                var rb = new RadioButton
+                {
+                    Text = LevelName(slot.Level), Appearance = Appearance.Button, Width = 44, Height = 28, TextAlign = ContentAlignment.MiddleCenter,
+                    Margin = new Padding(0, 0, 0, 4), Checked = _floors.SelectedIndex == listIndex,
+                };
+                new ToolTip().SetToolTip(rb, slot.Doc != null ? slot.ChosenName : "(no floor plan)");
+                rb.CheckedChanged += (s, e) =>
+                {
+                    if (!rb.Checked) return;
+                    _floors.SelectedIndex = listIndex;
+                    _onlySelected.Checked = false;
+                    _cut.Value = Math.Clamp(slot.Level, _cut.Minimum, _cut.Maximum);   // show up to this storey, place on it
+                    _furnHover = null;
+                };
+                _storeyStrip.Controls.Add(rb);
+            }
+            // start on the ground floor
+            var ground = _storeyStrip.Controls.OfType<RadioButton>().FirstOrDefault(r => r.Text == "G") ?? _storeyStrip.Controls.OfType<RadioButton>().LastOrDefault();
+            if (ground != null) ground.Checked = true;
+        }
+
+        private static Bitmap Placeholder(string text)
+        {
+            var bmp = new Bitmap(96, 96);
+            using var g = Graphics.FromImage(bmp);
+            g.Clear(Color.FromArgb(22, 22, 40));
+            using var f = new Font("Segoe UI", 8f);
+            TextRenderer.DrawText(g, text, f, new Rectangle(0, 0, 96, 96), Color.Gray, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+            return bmp;
+        }
+
+        private string FurnitureFolder(string name) =>
+            _ws.ModDir == null ? null : Path.Combine(_ws.ExportDir, ModPaths.FurnitureModelsDir, ModPaths.ModelFolder(name));
+
+        private void FillCatalog()
+        {
+            IEnumerable<CatalogFurniture> list = _ws.Catalog.Furniture;
+            var q = _search.Text.Trim();
+            if (q.Length > 0) list = list.Where(f => f.Name.IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0 || (f.Classes ?? new List<string>()).Any(c => c.IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0));
+            var used = new HashSet<string>((_opt.Furniture ?? new List<FurnitureItem>()).Select(f => f.Preset));
+            list = _catFilter.SelectedIndex switch
+            {
+                1 => list.Where(f => !f.Wall && !f.Ceiling),
+                2 => list.Where(f => f.Wall),
+                3 => list.Where(f => f.Ceiling),
+                4 => list.Where(f => f.FromMod),
+                5 => list.Where(f => used.Contains(f.Name)),
+                _ => list,
+            };
+            _catalog.BeginUpdate();
+            _catalog.Items.Clear();
+            _thumbQueue.Clear();
+            foreach (var f in list)
+            {
+                var item = new ListViewItem($"{f.Name}  {f.W}×{f.D}{(f.Wall ? " · wall" : f.Ceiling ? " · ceiling" : "")}{(f.FromMod ? " · mod" : "")}") { Tag = f.Name };
+                item.ImageKey = _thumbs.Images.ContainsKey(f.Name) ? f.Name : "wait";
+                _catalog.Items.Add(item);
+                if (item.ImageKey == "wait") _thumbQueue.Enqueue(item);
+                if (f.Name == PickedPreset) item.Selected = true;
+            }
+            _catalog.EndUpdate();
+            if (_ws.Catalog.Furniture.Count == 0)
+                _furnHint.Text = "No furniture listed yet: start the game once with the plugin (and wait at the main menu), then reopen this window.";
+        }
+
+        /// <summary>One picture per tick, so the window stays responsive while the catalog fills in.</summary>
+        private void NextThumb()
+        {
+            while (_thumbQueue.Count > 0)
+            {
+                var item = _thumbQueue.Dequeue();
+                if (item.ListView == null) continue;
+                var name = (string)item.Tag;
+                if (!_thumbs.Images.ContainsKey(name))
+                {
+                    var img = FurnitureThumbs.Get(FurnitureFolder(name), 96);
+                    if (img == null) { item.ImageKey = "none"; return; }
+                    _thumbs.Images.Add(name, img);
+                }
+                item.ImageKey = name;
+                return;
+            }
+        }
+
+        // ---- undo / redo of the building's furniture
+        private static List<FurnitureItem> Clone(IEnumerable<FurnitureItem> list) =>
+            list.Select(f => new FurnitureItem { Floor = f.Floor, Address = f.Address, Variation = f.Variation, Preset = f.Preset, X = f.X, Y = f.Y, Angle = f.Angle }).ToList();
+
+        private void Remember()
+        {
+            if (_opt.Furniture == null) return;
+            if (_historyAt < _history.Count - 1) _history.RemoveRange(_historyAt + 1, _history.Count - _historyAt - 1);
+            _history.Add(Clone(_opt.Furniture));
+            _historyAt = _history.Count - 1;
+        }
+
+        private void Restore(int at)
+        {
+            if (_opt.Furniture == null || at < 0 || at >= _history.Count) return;
+            _historyAt = at;
+            _opt.Furniture.Clear();
+            _opt.Furniture.AddRange(Clone(_history[at]));
+            _furnHover = null;
+            _furnLast = null;
+            var owner = FurnitureOwner;
+            if (owner != null) owner.Dirty = true;
+            FurnitureRules.RaiseChanged(this);
+            RebuildFaces();
+        }
+
+        private void Undo() => Restore(_historyAt - 1);
+        private void Redo() => Restore(_historyAt + 1);
+
+        private void TurnPiece(FurnitureItem it)
+        {
+            if (it == null) { _furnAngle = (_furnAngle + 90) % 360; _furnHover = null; _furnHint.Text = $"The next piece is turned {_furnAngle}°."; return; }
+            int old = it.Angle;
+            it.Angle = (it.Angle + 90) % 360;
+            var slot = SlotFor(it);
+            var (w, d) = FurnitureRules.Footprint(it, _opt.FurnitureInfo(it.Preset));
+            string why = "its floor isn't shown";
+            if (slot == null || !FurnitureRules.Fits(slot.Doc, _opt.Furniture, it.X, it.Y, w, d, it.Preset, it, VarOf(slot), _opt.FurnitureInfo, out _, out why))
+            { it.Angle = old; _furnHint.Text = $"Can't turn it there: {why}."; return; }
+            FurnChanged();
+        }
+
+        private void RemovePiece(FurnitureItem it)
+        {
+            if (it == null || _opt.Furniture == null) return;
+            _opt.Furniture.Remove(it);
+            if (_furnLast == it) _furnLast = null;
+            FurnChanged();
+        }
+
+        // ------------------------------------------------------------------ furniture in 3D
+
+        private BuildingEntry FurnitureOwner => _building ?? _ws.Buildings.FirstOrDefault(b => b.Floors.Any(f => f.Doc == _singleDoc || f.Name == _singleName));
+
+        private void SetupFurniture()
+        {
+            foreach (var f in _ws.Catalog.Furniture)
+                _furnPick.Items.Add($"{f.Name}  ({f.W}×{f.D}{(f.Wall ? ", wall" : "")}{(f.Ceiling ? ", ceiling" : "")})");
+            if (_ws.Catalog.Furniture.Count == 0) _furnPick.Text = "(start the game once with the new plugin to list the furniture)";
+            _placeFurn.CheckedChanged += (s, e) =>
+            {
+                _view.EditMode = _placeFurn.Checked && _opt.Furniture != null;
+                if (_placeFurn.Checked && _opt.Furniture == null)
+                {
+                    _furnHint.Text = "Furniture can only be placed in floors of your own buildings.";
+                    _placeFurn.Checked = false;
+                }
+                if (!_placeFurn.Checked) { _opt.Ghost = null; _opt.Highlight = null; RebuildFaces(); }
+            };
+            _view.EditDown += FurnDown;
+            _view.EditMove += FurnMove;
+            _view.EditUp += () => { if (_furnDrag != null) { _furnDrag = null; FurnChanged(); } };
+            _view.EditRightClick += (from, dir) =>
+            {
+                if (!HitCell(from, dir, out var slot, out int x, out int y)) return;
+                var under = FurnitureRules.At(slot.Doc, _opt.Furniture, x, y, VarOf(slot), _opt.FurnitureInfo);
+                if (under != null) { _opt.Furniture.Remove(under); FurnChanged(); }
+            };
+            KeyPreview = true;
+            KeyDown += (s, e) =>
+            {
+                if (!_view.EditMode || _furnPick.Focused || _search.Focused) return;
+                var under = _furnHover?.under;
+                if (e.KeyCode == Keys.R)
+                {
+                    if (under != null)
+                    {
+                        int old = under.Angle;
+                        under.Angle = (under.Angle + 90) % 360;
+                        var slot = SlotFor(under);
+                        var (w, d) = FurnitureRules.Footprint(under, _opt.FurnitureInfo(under.Preset));
+                        string why = "its floor isn't shown";
+                        if (slot == null || !FurnitureRules.Fits(slot.Doc, _opt.Furniture, under.X, under.Y, w, d, under.Preset, under, VarOf(slot), _opt.FurnitureInfo, out _, out why))
+                        { under.Angle = old; _furnHint.Text = $"Can't turn it there: {why}."; }
+                        else FurnChanged();
+                    }
+                    else { _furnAngle = (_furnAngle + 90) % 360; _furnHover = null; }
+                    e.Handled = true;
+                }
+                else if ((e.KeyCode == Keys.Delete || e.KeyCode == Keys.Back) && under != null)
+                {
+                    _opt.Furniture.Remove(under);
+                    _furnHover = null;
+                    FurnChanged();
+                    e.Handled = true;
+                }
+            };
+            Action<object> other = src => { if (src != this && !IsDisposed) { if (_furnish) Remember(); RebuildFaces(); } };
+            FurnitureRules.Changed += other;
+            FormClosed += (s, e) => FurnitureRules.Changed -= other;
+        }
+
+        private static Func<int, int> VarOf(FloorSlot slot) =>
+            a => slot?.ShownVariation != null && a >= 0 && a < slot.ShownVariation.Length ? slot.ShownVariation[a] : 0;
+
+        private FloorSlot SlotFor(FurnitureItem it) => _slots.FirstOrDefault(s => s.Doc != null && s.Doc.Name == it.Floor);
+
+        private string PickedPreset => (_furnPick.Text ?? "").Split(new[] { "  (" }, StringSplitOptions.None)[0].Trim();
+
+        /// <summary>The cell of the chosen storey's floor under the mouse.</summary>
+        private bool HitCell(NV.Vector3 from, NV.Vector3 dir, out FloorSlot slot, out int x, out int y)
+        {
+            x = y = 0;
+            slot = SelectedSlot ?? _slots.FirstOrDefault(s => s.Level == 0 && s.Doc != null) ?? _slots.FirstOrDefault(s => s.Doc != null);
+            if (slot?.Doc == null || Math.Abs(dir.Y) < 1e-4f) return false;
+            float planeY = PreviewScene.LevelY(slot.Level, _opt);
+            float t = (planeY - from.Y) / dir.Y;
+            if (t <= 0) return false;
+            var p = from + dir * t;
+            x = (int)Math.Floor(p.X);
+            y = (int)Math.Floor(p.Z);
+            return x >= 0 && y >= 0 && x < slot.Doc.Width && y < slot.Doc.Height;
+        }
+
+        private bool FurnDown(NV.Vector3 from, NV.Vector3 dir)
+        {
+            if (_opt.Furniture == null || !HitCell(from, dir, out var slot, out int x, out int y)) return false;
+            var vars = VarOf(slot);
+            var under = FurnitureRules.At(slot.Doc, _opt.Furniture, x, y, vars, _opt.FurnitureInfo);
+            if (under != null) { _furnDrag = under; _furnLast = under; _furnGrab = (x - under.X, y - under.Y); return true; }
+            var preset = PickedPreset;
+            var info = _opt.FurnitureInfo(preset);
+            if (info == null) { _furnHint.Text = "Pick a piece of furniture in the list first."; return true; }
+            var item = new FurnitureItem { Floor = slot.Doc.Name, Preset = preset, Angle = _furnAngle, X = x, Y = y };
+            var (w, d) = FurnitureRules.Footprint(item, info);
+            if (!FurnitureRules.Fits(slot.Doc, _opt.Furniture, x, y, w, d, preset, null, vars, _opt.FurnitureInfo, out int a, out var why))
+            { _furnHint.Text = $"Can't put {preset} there: {why}."; return true; }
+            item.Address = a + 1;
+            item.Variation = vars(a);
+            _opt.Furniture.Add(item);
+            _furnLast = item;
+            FurnChanged();
+            return true;
+        }
+
+        private void FurnMove(NV.Vector3 from, NV.Vector3 dir, bool dragging)
+        {
+            if (_opt.Furniture == null) return;
+            if (!HitCell(from, dir, out var slot, out int x, out int y))
+            {
+                if (_opt.Ghost != null || _opt.Highlight != null) { _opt.Ghost = null; _opt.Highlight = null; _furnHover = null; RebuildFaces(); }
+                return;
+            }
+            var vars = VarOf(slot);
+            if (dragging && _furnDrag != null)
+            {
+                int nx = x - _furnGrab.x, ny = y - _furnGrab.y;
+                if (nx == _furnDrag.X && ny == _furnDrag.Y) return;
+                var (w, d) = FurnitureRules.Footprint(_furnDrag, _opt.FurnitureInfo(_furnDrag.Preset));
+                if (FurnitureRules.Fits(slot.Doc, _opt.Furniture, nx, ny, w, d, _furnDrag.Preset, _furnDrag, vars, _opt.FurnitureInfo, out _, out _))
+                { _furnDrag.X = nx; _furnDrag.Y = ny; RebuildFaces(); }
+                return;
+            }
+            var under = FurnitureRules.At(slot.Doc, _opt.Furniture, x, y, vars, _opt.FurnitureInfo);
+            bool ok = false;
+            FurnitureItem ghost = null;
+            var info = _opt.FurnitureInfo(PickedPreset);
+            if (under == null && info != null)
+            {
+                ghost = new FurnitureItem { Floor = slot.Doc.Name, Preset = info.Name, Angle = _furnAngle, X = x, Y = y };
+                var (w, d) = FurnitureRules.Footprint(ghost, info);
+                ok = FurnitureRules.Fits(slot.Doc, _opt.Furniture, x, y, w, d, info.Name, null, vars, _opt.FurnitureInfo, out _, out _);
+            }
+            var key = (x, y, ok, under);
+            if (_furnHover.HasValue && _furnHover.Value.Equals(key) && (_opt.Ghost?.Angle ?? _furnAngle) == _furnAngle) return;
+            _furnHover = key;
+            _opt.Ghost = ghost;
+            _opt.GhostFits = ok;
+            _opt.GhostLevel = slot.Level;
+            _opt.Highlight = under;
+            _furnHint.Text = under != null ? $"{under.Preset} (turned {under.Angle}°): drag to move, R turns, right-click or Del removes."
+                                           : ghost != null ? (ok ? $"Click to put {ghost.Preset} here." : $"{ghost.Preset} doesn't fit here.") : "Pick a piece of furniture in the list.";
+            RebuildFaces();
+        }
+
+        private void FurnChanged()
+        {
+            if (_furnish) Remember();
+            var owner = FurnitureOwner;
+            if (owner != null) owner.Dirty = true;
+            _furnHover = null;
+            FurnitureRules.RaiseChanged(this);
+            RebuildFaces();
+        }
+
+        /// <summary>Only the floors and furniture again (not the game's model): quick enough while the mouse moves.</summary>
+        private void RebuildFaces()
+        {
+            _view.SetFaces(PreviewScene.Build(_slots, _opt), keepCamera: true);
+            _view.SetFurniture(FurnitureInstances());
+        }
+
+        // ---- the game's furniture models (exported by the plugin to Export/furniture)
+        private readonly Dictionary<string, LoadedModel> _furnModels = new(StringComparer.Ordinal);
+        private const float UnitsPerNode = 1.8f;
+
+        private LoadedModel FurnitureModel(string preset)
+        {
+            if (string.IsNullOrEmpty(preset) || _ws.ModDir == null) return null;
+            if (_furnModels.TryGetValue(preset, out var m)) return m;
+            var folder = Path.Combine(_ws.ExportDir, ModPaths.FurnitureModelsDir, ModPaths.ModelFolder(preset));
+            m = Directory.Exists(folder) ? ModelLoader.Load(folder, out _) : null;
+            _furnModels[preset] = m;
+            return m;
+        }
+
+        /// <summary>
+        /// Where each placed piece's model goes: centred on its footprint, standing on its storey's floor, turned like in
+        /// the game (the game's angle is the editor's + 180, Unity's +Z is up the plan), in the scene's cell units.
+        /// </summary>
+        private List<Preview3D.FurnitureInstance> FurnitureInstances()
+        {
+            var list = new List<Preview3D.FurnitureInstance>();
+            if (_opt.Furniture == null || !_opt.ShowFurniture) return list;
+            foreach (var slot in _slots)
+            {
+                if (slot.Doc == null) continue;
+                var vars = VarOf(slot);
+                float y0 = PreviewScene.LevelY(slot.Level, _opt);
+                foreach (var it in FurnitureRules.OnFloor(slot.Doc, _opt.Furniture, vars))
+                {
+                    var model = FurnitureModel(it.Preset);
+                    if (model == null) continue;
+                    var (w, d) = FurnitureRules.Footprint(it, _opt.FurnitureInfo(it.Preset));
+                    // model in Unity space (un-mirror X), centred, standing on y = 0
+                    float cx = -(model.Min.X + model.Max.X) / 2f, cz = (model.Min.Z + model.Max.Z) / 2f;
+                    float gameAngle = ((it.Angle + 180) % 360) * MathF.PI / 180f;
+                    var xf = NV.Matrix4x4.CreateScale(-1, 1, 1)
+                           * NV.Matrix4x4.CreateTranslation(-cx, -model.Min.Y, -cz)
+                           * NV.Matrix4x4.CreateScale(FitScale(model, _opt.FurnitureInfo(it.Preset)))
+                           * NV.Matrix4x4.CreateRotationY(gameAngle)
+                           * NV.Matrix4x4.CreateScale(1 / UnitsPerNode, 1 / UnitsPerNode, -1 / UnitsPerNode)
+                           * NV.Matrix4x4.CreateTranslation(it.X + w / 2f, y0, it.Y + d / 2f);
+                    list.Add(new Preview3D.FurnitureInstance { Model = model, Transform = xf, Level = slot.Level });
+                }
+            }
+            return list;
+        }
+
+        /// <summary>
+        /// 1, unless a model is far bigger than its piece's footprint (some mods' models are made at another size and
+        /// scaled in the game): then it's shrunk to fit the footprint, so it doesn't fill half the building.
+        /// </summary>
+        private static float FitScale(LoadedModel model, CatalogFurniture info)
+        {
+            if (info == null) return 1f;
+            float sx = (model.Max.X - model.Min.X) / UnitsPerNode, sz = (model.Max.Z - model.Min.Z) / UnitsPerNode;
+            float fit = MathF.Min(Math.Max(1, info.W) * 1.2f / MathF.Max(sx, 1e-3f), Math.Max(1, info.D) * 1.2f / MathF.Max(sz, 1e-3f));
+            return fit < 1f / 1.6f ? fit : 1f;
+        }
+
         private FloorSlot SelectedSlot => _floors.SelectedIndex >= 0 && _floors.SelectedIndex < _slots.Count
             ? _slots[_slots.Count - 1 - _floors.SelectedIndex]   // list shows the top storey first
             : null;
@@ -217,11 +722,11 @@ namespace BuildingEditor
 
         private void DrawFloorItem(object sender, DrawItemEventArgs e)
         {
-            e.DrawBackground();
+            Theme.DrawItemBackground(e);
             if (e.Index < 0 || e.Index >= _slots.Count) return;
             var s = _slots[_slots.Count - 1 - e.Index];
             bool selected = (e.State & DrawItemState.Selected) != 0;
-            var fore = s.Doc == null ? Color.Firebrick : selected ? SystemColors.HighlightText : SystemColors.ControlText;
+            var fore = s.Doc == null ? Color.Firebrick : Theme.ItemFore(e);
             var text = $"{LevelName(s.Level),-3} {(s.Candidates.Count == 0 ? "(no floor plans)" : s.ChosenName)}" +
                        (s.Doc == null && s.Candidates.Count > 0 ? "  (missing)" : "") +
                        (s.Candidates.Count > 1 ? $"  [{s.Chosen + 1}/{s.Candidates.Count}]" : "");
@@ -535,6 +1040,7 @@ namespace BuildingEditor
             ApplyCut(refresh: false);
             _view.SetModel(ModelVisible ? _model : null, xf, keepCamera: true);
             _view.SetFaces(faces, keepCamera);   // frames the camera on floors + model
+            _view.SetFurniture(FurnitureInstances());
 
             int missing = _slots.Count(s => s.Doc == null);
             _stats.Text = $"{_slots.Count} storey(s) · {faces.Count:N0} faces" +

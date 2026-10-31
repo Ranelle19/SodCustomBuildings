@@ -62,6 +62,12 @@ namespace CustomBuildings.Shared
         /// <summary>Units that always become a particular kind of place (an AddressPreset, e.g. "PawnShop" or a mod's own).</summary>
         public List<ReservedPlace> ReservedPlaces { get; set; } = new();
 
+        /// <summary>
+        /// Furniture placed by hand in the editor. A unit (floor + address + variation) that has any gets exactly this
+        /// furniture in the game; the game adds none of its own there.
+        /// </summary>
+        public List<FurnitureItem> Furniture { get; set; } = new();
+
         public bool ReplaceBasementLayouts { get; set; } = false;
         public List<FloorLayoutDef> BasementLayouts { get; set; } = new();
 
@@ -139,6 +145,43 @@ namespace CustomBuildings.Shared
         public string Place { get; set; } = "";
     }
 
+    /// <summary>One piece of furniture placed by hand, in a floor plan's node coordinates.</summary>
+    public class FurnitureItem
+    {
+        /// <summary>Floor plan name (file name).</summary>
+        public string Floor { get; set; } = "";
+        /// <summary>Address number as the editor shows it (1 = the first address of the floor file).</summary>
+        public int Address { get; set; }
+        /// <summary>Layout variation of that address (0 = the first).</summary>
+        public int Variation { get; set; }
+        /// <summary>FurniturePreset name (catalog Furniture).</summary>
+        public string Preset { get; set; } = "";
+        /// <summary>The corner node of its footprint (smallest x and y), in the floor plan's node grid.</summary>
+        public int X { get; set; }
+        public int Y { get; set; }
+        /// <summary>0, 90, 180 or 270 (clockwise, as seen from above in the editor; 0 = facing down the plan).</summary>
+        public int Angle { get; set; }
+
+        /// <summary>Footprint in nodes after turning (width along x, depth along y).</summary>
+        public (int w, int d) Footprint(int w, int d) => Angle % 180 == 0 ? (w, d) : (d, w);
+    }
+
+    /// <summary>A piece of furniture the game has (FurniturePreset), for the editor's furniture tool.</summary>
+    public class CatalogFurniture
+    {
+        public string Name { get; set; } = "";
+        /// <summary>Footprint in nodes, unturned (width, depth).</summary>
+        public int W { get; set; } = 1;
+        public int D { get; set; } = 1;
+        public bool Wall { get; set; }
+        public bool Ceiling { get; set; }
+        public bool Tall { get; set; }
+        public string Group { get; set; } = "";
+        public List<string> Classes { get; set; } = new();
+        /// <summary>Added by another mod.</summary>
+        public bool FromMod { get; set; }
+    }
+
     /// <summary>A kind of place the game can give a unit (AddressPreset), incl. ones mods add at game start.</summary>
     public class CatalogPlace
     {
@@ -150,6 +193,8 @@ namespace CustomBuildings.Shared
         public int MinFloor { get; set; }
         public int MaxFloor { get; set; }
         public string Company { get; set; } = "";
+        /// <summary>Added by another mod (not one of the game's own). Players need that mod as well.</summary>
+        public bool FromMod { get; set; }
     }
 
     /// <summary>Dropdown for StairsFrom: game buildings, "(lift)" after those whose stairs have one. Filled by the editor.</summary>
@@ -189,6 +234,8 @@ namespace CustomBuildings.Shared
         public List<string> RoomTypePresets { get; set; } = new();
         /// <summary>Every kind of place the game knows when a city is made (Toolbox.allAddressPresets), with where it fits.</summary>
         public List<CatalogPlace> Places { get; set; } = new();
+        /// <summary>Every piece of furniture the game has, for the furniture tool.</summary>
+        public List<CatalogFurniture> Furniture { get; set; } = new();
     }
 
     /// <summary>
@@ -404,6 +451,8 @@ namespace CustomBuildings.Shared
         public const string ExportFloorsDir = "floors";
         public const string CatalogFile = "catalog.json";
         public const string ModelsDir = "models";
+        /// <summary>Export/furniture/&lt;name&gt;/model.obj: the game's furniture, for the editor's 3D view.</summary>
+        public const string FurnitureModelsDir = "furniture";
         public const string ModelInfoFile = "model.json";
         public const string ModelObjFile = "model.obj";
         public const string ModelMtlFile = "model.mtl";

@@ -31,6 +31,9 @@ namespace BuildingEditor
         private readonly M3.Model3DGroup _floors = new();
         private readonly M3.Model3DGroup _model = new();
         private readonly M3.Model3DGroup _env = new();
+        private readonly M3.Model3DGroup _furn = new();
+        private readonly Dictionary<LoadedModel, M3.Model3DGroup> _furnGeometry = new();
+        private List<FurnitureInstance> _furnItems = new();
         private readonly Dictionary<string, WM.ImageBrush> _textures = new(StringComparer.OrdinalIgnoreCase);
 
         private List<Face> _faces = new();
@@ -55,6 +58,19 @@ namespace BuildingEditor
         /// <summary>Extent of the floor plans (world X/Z) for the pier; set by the form.</summary>
         public NV.Vector2 FootprintMin, FootprintMax;
 
+        // ---- editing in the view (furniture): left button edits, right-drag turns the camera, middle-drag pans
+        /// <summary>On: the left button goes to the edit handlers instead of turning the camera.</summary>
+        public bool EditMode;
+        /// <summary>Left button down: a ray (from, direction) into the scene. Return true when it was used.</summary>
+        public event Func<NV.Vector3, NV.Vector3, bool> EditDown;
+        /// <summary>The mouse moved (ray), with the left button held after EditDown said true, or just hovering.</summary>
+        public event Action<NV.Vector3, NV.Vector3, bool> EditMove;
+        public event Action EditUp;
+        /// <summary>Right click without dragging.</summary>
+        public event Action<NV.Vector3, NV.Vector3> EditRightClick;
+        private bool _editing;
+        private W.Point _downAt;
+
         public Preview3D()
         {
             var grid = new WC.Grid();
@@ -68,6 +84,7 @@ namespace BuildingEditor
             root.Children.Add(_lights);
             root.Children.Add(_env);
             root.Children.Add(_floors);
+            root.Children.Add(_furn);
             root.Children.Add(_model);   // after floors so a see-through model blends over them
             _viewport.Children.Add(new M3.ModelVisual3D { Content = root });
 
@@ -110,6 +127,63 @@ namespace BuildingEditor
             RebuildFloors();
             RebuildModel();
             RebuildEnvironment();
+            RebuildFurniture();
+        }
+
+        // ------------------------------------------------------------------ furniture models
+
+        /// <summary>One placed piece shown with its real model: model space (OBJ) to scene, and its storey (for the cutaway).</summary>
+        public sealed class FurnitureInstance
+        {
+            public LoadedModel Model;
+            public NV.Matrix4x4 Transform;
+            public int Level;
+        }
+
+        public void SetFurniture(List<FurnitureInstance> items)
+        {
+            _furnItems = items ?? new List<FurnitureInstance>();
+            RebuildFurniture();
+        }
+
+        private void RebuildFurniture()
+        {
+            _furn.Children.Clear();
+            foreach (var it in _furnItems)
+            {
+                if (it.Model == null || it.Level > MaxLevel || it.Level < MinLevel) continue;
+                var geo = FurnitureGeometry(it.Model);
+                var m = it.Transform;
+                var inst = new M3.Model3DGroup
+                {
+                    Transform = new M3.MatrixTransform3D(new M3.Matrix3D(m.M11, m.M12, m.M13, m.M14, m.M21, m.M22, m.M23, m.M24,
+                                                                        m.M31, m.M32, m.M33, m.M34, m.M41, m.M42, m.M43, m.M44)),
+                };
+                inst.Children.Add(geo);
+                _furn.Children.Add(inst);
+            }
+        }
+
+        /// <summary>A model's meshes once (shared by every copy of the piece).</summary>
+        private M3.Model3DGroup FurnitureGeometry(LoadedModel model)
+        {
+            if (_furnGeometry.TryGetValue(model, out var g)) return g;
+            g = new M3.Model3DGroup();
+            foreach (var m in model.Meshes)
+            {
+                var mesh = new M3.MeshGeometry3D { Positions = new M3.Point3DCollection(m.Pos.Select(P3)), TriangleIndices = new WM.Int32Collection(m.Idx) };
+                if (m.HasNormals) mesh.Normals = new M3.Vector3DCollection(m.Nrm.Select(n => new M3.Vector3D(n.X, n.Y, n.Z)));
+                if (m.HasUv) mesh.TextureCoordinates = new WM.PointCollection(m.Uv.Select(t => new W.Point(t.X, 1 - t.Y)));
+                mesh.Freeze();
+                var kd = WM.Color.FromRgb((byte)Math.Clamp(m.Kd.X * 255, 0, 255), (byte)Math.Clamp(m.Kd.Y * 255, 0, 255), (byte)Math.Clamp(m.Kd.Z * 255, 0, 255));
+                WM.Brush brush = m.TexturePath != null && m.HasUv ? Texture(m.TexturePath, 1.0) : Solid(kd, 1.0);
+                var mat = new M3.DiffuseMaterial(brush);
+                mat.Freeze();
+                g.Children.Add(new M3.GeometryModel3D(mesh, mat) { BackMaterial = mat });
+            }
+            g.Freeze();
+            _furnGeometry[model] = g;
+            return g;
         }
 
         private void UpdateSceneBounds()
@@ -360,18 +434,52 @@ namespace BuildingEditor
             _camera.FarPlaneDistance = Math.Max(1000, _sceneRadius * 40);
         }
 
+        /// <summary>The ray from the camera through a point of the view.</summary>
+        private (NV.Vector3 from, NV.Vector3 dir) Ray(W.Point p)
+        {
+            double w = Math.Max(1, _border.ActualWidth), h = Math.Max(1, _border.ActualHeight);
+            var cam = _target + _dist * new NV.Vector3(MathF.Cos(_pitch) * MathF.Sin(_yaw), MathF.Sin(_pitch), MathF.Cos(_pitch) * MathF.Cos(_yaw));
+            var f = NV.Vector3.Normalize(_target - cam);
+            var r = NV.Vector3.Normalize(NV.Vector3.Cross(f, NV.Vector3.UnitY));
+            var u = NV.Vector3.Cross(r, f);
+            float t = (float)Math.Tan(_camera.FieldOfView * Math.PI / 360.0);   // WPF's field of view is horizontal
+            float nx = (float)(2 * p.X / w - 1), ny = (float)(1 - 2 * p.Y / h);
+            var dir = NV.Vector3.Normalize(f + r * nx * t + u * ny * t * (float)(h / w));
+            return (cam, dir);
+        }
+
         private void OnDown(object sender, WI.MouseButtonEventArgs e)
         {
+            _downAt = e.GetPosition(_border);
+            if (EditMode && e.ChangedButton == WI.MouseButton.Left)
+            {
+                var (from, dir) = Ray(_downAt);
+                if (EditDown?.Invoke(from, dir) == true)
+                {
+                    _editing = true;
+                    _border.CaptureMouse();
+                    return;
+                }
+            }
             if (e.ClickCount == 2) { ResetView(); return; }
-            _drag = e.ChangedButton;
+            // in edit mode the right button turns the camera (the left one is for editing)
+            _drag = EditMode && e.ChangedButton == WI.MouseButton.Right ? WI.MouseButton.Left
+                  : EditMode && e.ChangedButton == WI.MouseButton.Left ? WI.MouseButton.Middle
+                  : e.ChangedButton;
             _last = e.GetPosition(_border);
             _border.CaptureMouse();
         }
 
         private void OnMove(object sender, WI.MouseEventArgs e)
         {
-            if (_drag == null) return;
             var p = e.GetPosition(_border);
+            if (EditMode && (_editing || _drag == null))
+            {
+                var (from, dir) = Ray(p);
+                EditMove?.Invoke(from, dir, _editing);
+                if (_editing) return;
+            }
+            if (_drag == null) return;
             float dx = (float)(p.X - _last.X), dy = (float)(p.Y - _last.Y);
             _last = p;
             if (_drag == WI.MouseButton.Left)
@@ -393,6 +501,19 @@ namespace BuildingEditor
 
         private void OnUp(object sender, WI.MouseButtonEventArgs e)
         {
+            if (_editing)
+            {
+                _editing = false;
+                _border.ReleaseMouseCapture();
+                EditUp?.Invoke();
+                return;
+            }
+            var up = e.GetPosition(_border);
+            if (EditMode && e.ChangedButton == WI.MouseButton.Right && Math.Abs(up.X - _downAt.X) + Math.Abs(up.Y - _downAt.Y) < 4)
+            {
+                var (from, dir) = Ray(up);
+                EditRightClick?.Invoke(from, dir);
+            }
             _drag = null;
             _border.ReleaseMouseCapture();
         }

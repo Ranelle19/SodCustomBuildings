@@ -30,6 +30,7 @@ namespace BuildingEditor
         public MainForm()
         {
             AppIcon.Apply(this);
+            Theme.Init(Enum.TryParse<Look>(_settings.Look, out var savedLook) ? savedLook : _settings.DarkMode ? Look.Dark : Look.Light);
             Text = "Shadows of Doubt Building Editor";
             Width = 1400;
             Height = 900;
@@ -49,6 +50,8 @@ namespace BuildingEditor
             _buildingPanel.MakeExterior += MakeExterior;
             _buildingPanel.PaintExterior += PaintExterior;
             _floorPanel.Preview3DRequested += PreviewFloor;
+            _floorPanel.FurnishRequested += FurnishBuilding;
+            FurnitureRules.Changed += src => { if (src is PreviewForm && !IsDisposed) { OnEdited(); } };
 
             var split = new SplitContainer { Dock = DockStyle.Fill, FixedPanel = FixedPanel.Panel1 };
             split.Panel1.Controls.Add(_tree);
@@ -100,6 +103,7 @@ namespace BuildingEditor
             building.DropDownItems.Add(Item("De&lete building", DeleteBuilding));
             building.DropDownItems.Add(new ToolStripSeparator());
             building.DropDownItems.Add(Item("&3D preview…", PreviewBuilding, Keys.Control | Keys.D3));
+            building.DropDownItems.Add(Item("&Furnish in 3D…", () => FurnishBuilding(null), Keys.Control | Keys.F));
             building.DropDownItems.Add(Item("Make &exterior…", MakeExterior, Keys.Control | Keys.E));
             building.DropDownItems.Add(Item("&Paint exterior…", PaintExterior, Keys.Control | Keys.P));
             building.DropDownItems.Add(new ToolStripSeparator());
@@ -124,6 +128,23 @@ namespace BuildingEditor
             tools.DropDownItems.Add(Item("&Check for problems", CheckProblems));
             tools.DropDownItems.Add(Item("Fix stairs, lifts and entrances in all my floors", FixStairsAll));
             tools.DropDownItems.Add(Item("Show content &hash (multiplayer check)", ShowHash));
+            tools.DropDownItems.Add(new ToolStripSeparator());
+            var look = new ToolStripMenuItem("&Look");
+            var looks = new (Look mode, string text)[] { (Look.Light, "&Light"), (Look.Dark, "&Dark"), (Look.Sod, "&Shadows of Doubt") };
+            foreach (var (mode, text) in looks)
+            {
+                var it = new ToolStripMenuItem(text) { Checked = Theme.Mode == mode, Tag = mode };
+                it.Click += (s, e) =>
+                {
+                    foreach (ToolStripMenuItem other in look.DropDownItems) other.Checked = other == it;
+                    _settings.Look = mode.ToString();
+                    _settings.DarkMode = mode != Look.Light;
+                    _settings.Save();
+                    Theme.Set(mode);
+                };
+                look.DropDownItems.Add(it);
+            }
+            tools.DropDownItems.Add(look);
 
             var help = new ToolStripMenuItem("&Help");
             help.DropDownItems.Add(Item("&How it works", ShowHelp, Keys.F1));
@@ -598,6 +619,16 @@ namespace BuildingEditor
             var b = SelectedBuilding();
             if (b == null) { MessageBox.Show(this, "Select a building (or one of its floors) first."); return; }
             new PreviewForm(_ws, b).Show(this);
+        }
+
+        /// <summary>The furnishing window: catalog on the left, the building in 3D to put furniture into.</summary>
+        private void FurnishBuilding(BuildingEntry b)
+        {
+            b ??= SelectedBuilding();
+            if (b == null) { MessageBox.Show(this, "Select a building (or one of its floors) first."); return; }
+            var open = OwnedForms.OfType<PreviewForm>().FirstOrDefault(f => f.Furnishing == b);
+            if (open != null) { open.Activate(); return; }
+            new PreviewForm(_ws, b, true) { SaveRequested = Save }.Show(this);
         }
 
         private void MakeExterior()

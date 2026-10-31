@@ -70,6 +70,7 @@ namespace BuildingEditor
                     Sep();
                     Add("New floor…", NewFloor);
                     Add("3D preview…", PreviewBuilding);
+                    Add("Furnish in 3D…", () => FurnishBuilding(null));
                     Add("Make exterior…", MakeExterior);
                     Add("Paint exterior…", PaintExterior);
                     Add("Export for other mod loaders…", ExportOtherLoaders);
@@ -245,6 +246,9 @@ namespace BuildingEditor
             if (def.ReservedPlaces != null)
                 foreach (var r in def.ReservedPlaces)
                     if (r.Floor != null && renamed.TryGetValue(r.Floor, out var n)) r.Floor = n;
+            if (def.Furniture != null)
+                foreach (var it in def.Furniture)
+                    if (it.Floor != null && renamed.TryGetValue(it.Floor, out var n2)) it.Floor = n2;
             _ws.Buildings.Add(entry);
             RefreshTree(entry);
             UpdateTitle();

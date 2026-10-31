@@ -74,6 +74,7 @@ namespace CustomBuildings
                 catalog.RoomTypePresets = Names<RoomTypePreset>(loader);
                 FillWallNames(catalog, loader);
                 FillPlaces(catalog);
+                FillFurniture(catalog);
                 FillLayoutRooms(catalog, loader);
 
                 catalog.Buildings.Sort((a, b) => string.CompareOrdinal(a.PresetName, b.PresetName));
@@ -87,6 +88,7 @@ namespace CustomBuildings
                     try { ModelExporter.ExportAll(exportDir); }
                     catch (Exception e) { Plugin.L.LogError($"Model export failed: {e}"); }
                 }
+                FurnitureModelExporter.QueueAll();
             }
             catch (Exception e)
             {
@@ -155,6 +157,84 @@ namespace CustomBuildings
             return result;
         }
 
+        /// <summary>Places other mods made (made while the game runs, so a negative instance id, or not in the game's preset cache when first seen). Kept once known.</summary>
+        private static readonly HashSet<string> ModPlaces = new(StringComparer.Ordinal);
+
+        private static bool InGameCache(string name)
+        {
+            try { var tb = Toolbox.Instance; return tb == null || (tb.LoadDataFromResources<AddressPreset>(name, out var a) && a != null); }
+            catch { return true; }
+        }
+
+        /// <summary>
+        /// Other mods add their kinds of places later than our first export (NewLife at the main menu). Before each city
+        /// load the place list in catalog.json is written again, so the editor can offer them too (marked as from a mod).
+        /// </summary>
+        internal static void RefreshPlaces()
+        {
+            try
+            {
+                var path = Path.Combine(Plugin.ModDir, ModPaths.ExportDir, ModPaths.CatalogFile);
+                if (!File.Exists(path)) return;
+                var catalog = JsonSerializer.Deserialize<Catalog>(File.ReadAllText(path), Json.Options);
+                if (catalog == null) return;
+                foreach (var p in catalog.Places) if (p.FromMod) ModPlaces.Add(p.Name);
+                string before = string.Join("|", catalog.Places.Select(p => p.Name + (p.FromMod ? "*" : ""))) + "#" + catalog.Furniture.Count;
+                catalog.Places.Clear();
+                FillPlaces(catalog);
+                catalog.Furniture.Clear();
+                FillFurniture(catalog);
+                FurnitureModelExporter.QueueAll();
+                string after = string.Join("|", catalog.Places.Select(p => p.Name + (p.FromMod ? "*" : ""))) + "#" + catalog.Furniture.Count;
+                if (before == after) return;
+                File.WriteAllText(path, JsonSerializer.Serialize(catalog, Json.Options));
+                var mods = catalog.Places.Where(p => p.FromMod).Select(p => p.Name).ToList();
+                Plugin.L.LogInfo($"Kinds of places and furniture for the editor updated ({catalog.Places.Count} places, {catalog.Furniture.Count} furniture; places from other mods: {(mods.Count == 0 ? "none" : string.Join(", ", mods))}).");
+            }
+            catch (Exception e) { Plugin.Verbose($"Couldn't update the place list: {e.Message}"); }
+        }
+
+        /// <summary>Every piece of furniture (FurniturePreset) with its footprint, for the editor's furniture tool.</summary>
+        private static void FillFurniture(Catalog catalog)
+        {
+            try
+            {
+                // the game's list, plus every furniture preset that exists (mods often make theirs as copies that
+                // aren't in the game's list)
+                var all = new List<FurniturePreset>();
+                try { var l = AssetLoader.Instance?.GetAllFurniture(); if (l != null) foreach (var f in l) all.Add(f); } catch { }
+                try { var l = Toolbox.Instance?.allFurniture; if (l != null) foreach (var f in l) all.Add(f); } catch { }
+                foreach (var o in Resources.FindObjectsOfTypeAll(Il2CppType.Of<FurniturePreset>()))
+                {
+                    var f = o?.TryCast<FurniturePreset>();
+                    if (f != null && !f.name.EndsWith("(Clone)", StringComparison.Ordinal)) all.Add(f);
+                }
+                var seen = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var f in all)
+                {
+                    if (f == null || string.IsNullOrEmpty(f.name) || !seen.Add(f.name)) continue;
+                    var cf = new CatalogFurniture { Name = f.name, FromMod = f.GetInstanceID() < 0 };
+                    try { cf.Group = f.furnitureGroup.ToString(); } catch { }
+                    if (f.classes != null)
+                        foreach (var c in f.classes)
+                        {
+                            if (c == null) continue;
+                            cf.Classes.Add(c.name);
+                            if (cf.Classes.Count > 1) continue;   // footprint and kind from the first class
+                            var sz = c.objectSize;
+                            cf.W = Math.Max(1, (int)Math.Round((double)sz.x));
+                            cf.D = Math.Max(1, (int)Math.Round((double)sz.y));
+                            cf.Wall = c.wallPiece;
+                            cf.Ceiling = c.ceilingPiece;
+                            cf.Tall = c.tall;
+                        }
+                    catalog.Furniture.Add(cf);
+                }
+                catalog.Furniture.Sort((a, b) => string.CompareOrdinal(a.Name, b.Name));
+            }
+            catch (Exception e) { Plugin.L.LogWarning($"Couldn't list furniture: {e.Message}"); }
+        }
+
         private static void FillPlaces(Catalog catalog)
         {
             try
@@ -170,6 +250,7 @@ namespace CustomBuildings
                         MinFloor = (int)ap.minMaxFloors.x, MaxFloor = (int)ap.minMaxFloors.y,
                         Company = ap.company != null ? ap.company.name : "",
                     };
+                    if (ModPlaces.Contains(p.Name) || ap.GetInstanceID() < 0 || !InGameCache(ap.name)) { p.FromMod = true; ModPlaces.Add(p.Name); }
                     if (ap.compatible != null) foreach (var c in ap.compatible) if (c != null) p.Fits.Add(c.name);
                     if (ap.limitToBuildings != null) foreach (var b in ap.limitToBuildings) if (b != null) p.OnlyIn.Add(b.presetName);
                     catalog.Places.Add(p);

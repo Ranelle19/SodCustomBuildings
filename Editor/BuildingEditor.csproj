@@ -14,7 +14,7 @@
     <!-- Lets you build on Linux/macOS too (it only runs on Windows). -->
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <ApplicationIcon>icon.ico</ApplicationIcon>
-    <Version>1.0.0</Version>
+    <Version>1.0.1</Version>
     <Product>Shadows of Doubt Building Editor</Product>
     <Company>Ranelle</Company>
   </PropertyGroup>
